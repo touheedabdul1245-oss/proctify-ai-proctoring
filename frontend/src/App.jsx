@@ -10,11 +10,14 @@ import Classes from './pages/admin/Classes'
 import TeacherDashboard from './pages/teacher/TeacherDashboard'
 import Proctoring from './pages/teacher/Proctoring'
 import Monitor from './pages/teacher/Monitor'
+import Results from './pages/teacher/Results'
+import Analytics from './pages/teacher/Analytics'
 import Exams from './pages/teacher/Exams'
 import ExamEditor from './pages/teacher/ExamEditor'
 import StudentDashboard from './pages/student/StudentDashboard'
 import Profile from './pages/student/Profile'
 import AssignedExams from './pages/student/AssignedExams'
+import StudentResults from './pages/student/StudentResults'
 import ExamIntro from './pages/student/ExamIntro'
 import ExamPaper from './pages/student/ExamPaper'
 import ExamResult from './pages/student/ExamResult'
@@ -72,6 +75,8 @@ export default function App() {
         <Route path="exams/:id" element={<ExamEditor />} />
         <Route path="proctoring" element={<Proctoring />} />
         <Route path="monitor" element={<Monitor />} />
+        <Route path="results" element={<Results />} />
+        <Route path="analytics" element={<Analytics />} />
       </Route>
 
       <Route
@@ -85,6 +90,7 @@ export default function App() {
         <Route index element={<StudentDashboard />} />
         <Route path="profile" element={<Profile />} />
         <Route path="exams" element={<AssignedExams />} />
+        <Route path="results" element={<StudentResults />} />
         <Route path="exams/:id" element={<ExamIntro />} />
         <Route path="exam/:token" element={<ExamPaper />} />
         <Route path="result/:token" element={<ExamResult />} />

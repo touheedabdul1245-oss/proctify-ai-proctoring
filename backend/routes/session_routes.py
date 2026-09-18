@@ -27,9 +27,11 @@ from ..models import (
     ExamReadinessCheck,
     ExamSession,
     Question,
+    Result,
     Student,
     User,
 )
+from ..proctoring.registry import drop as drop_engine
 from ..schemas import (
     AnswerSaveOut,
     AnswerSavePayload,
@@ -43,6 +45,7 @@ from ..schemas import (
     SessionStateOut,
     SubmitResponse,
 )
+from ..services.notifications import notify as notify_user
 
 router = APIRouter(prefix="/api", tags=["student-session"])
 
@@ -148,17 +151,49 @@ def _check_exam_window(exam: Exam):
         raise HTTPException(status_code=409, detail="Exam window has closed")
 
 
+def _upsert_result(db: Session, session: ExamSession, score: float, total: int):
+    """Persist/refresh the reserved Stage-5 Result row for (exam, student).
+
+    The row is written at finalize time (unpublished); a teacher later decides
+    whether/how to publish. SQL is the authoritative store."""
+    exam = session.exam
+    percent = round(max(0.0, min(100.0, score / total * 100.0)), 2) if total else None
+    status = "GRADED"
+    if exam.pass_marks is not None and percent is not None:
+        status = "PASS" if score >= exam.pass_marks else "FAIL"
+    row = (
+        db.query(Result)
+        .filter(
+            Result.exam_id == session.exam_id,
+            Result.student_id_db == session.student_id_db,
+        )
+        .first()
+    )
+    if row is None:
+        row = Result(exam_id=session.exam_id, student_id_db=session.student_id_db)
+        db.add(row)
+    row.score = round(float(score), 2)
+    row.total_marks = int(total)
+    row.percent = percent
+    row.result_status = status
+
+
 def _finalize_session(db: Session, session: ExamSession, expired: bool):
-    """Evaluate answers and close the session."""
+    """Evaluate answers, write the Result row and close the session."""
     now = _now()
+    total_marks = 0
+    score = 0.0
     for ans in session.answers:
         q = ans.question
+        total_marks += int(q.marks or 0)
         if ans.selected_option:
             ans.is_correct = ans.selected_option == q.correct_option
             if ans.is_correct:
-                ans.marks_awarded = float(q.marks)
+                marks = float(q.marks or 0)
             else:
-                ans.marks_awarded = -abs(q.negative_marks or 0)
+                marks = -abs(float(q.negative_marks or 0))
+            ans.marks_awarded = marks
+            score += marks
         else:
             ans.is_correct = None
             ans.marks_awarded = 0.0
@@ -168,12 +203,31 @@ def _finalize_session(db: Session, session: ExamSession, expired: bool):
     if expired:
         session.expired_at = now
     db.add(session)
+    total = total_marks or int(session.exam.total_marks or 0)
+    _upsert_result(db, session, score=score, total=total)
+    drop_engine(session.id)
+
+
+def _notify_session_closed(db: Session, session: ExamSession):
+    """One-time low-volume notification to the exam owner when a session closes."""
+    exam = session.exam
+    student = session.student
+    name = student.full_name if student else "A student"
+    notify_user(
+        db,
+        exam.created_by,
+        type_="SESSION",
+        title=f"{name} submitted '{exam.title}'",
+        body=f"Session #{session.id} closed as {session.status}.",
+        link=f"/teacher/results?exam_id={exam.id}",
+    )
 
 
 def _finalize_if_due(db: Session, session: ExamSession) -> bool:
     """Auto-submit when the timer has run out. Returns True if it just happened."""
     if session.status == "ACTIVE" and session.end_time and _now() >= session.end_time:
         _finalize_session(db, session, expired=True)
+        _notify_session_closed(db, session)
         db.commit()
         return True
     return False
@@ -538,6 +592,7 @@ def submit_exam(
 
     _finalize_session(db, session, expired=False)
     db.add(session)
+    _notify_session_closed(db, session)
     _commit(db, current_user, "SESSION_SUBMIT", "exam_sessions", session.id,
             f"answers saved")
     return _summary(db, session)

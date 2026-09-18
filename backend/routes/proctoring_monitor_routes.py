@@ -25,21 +25,14 @@ from ..audit import audit
 from ..auth import require_teacher
 from ..database import get_db
 from ..models import (
-    AIServiceEvent,
     Exam,
-    Evidence,
     ExamReadinessCheck,
     ExamSession,
     Incident,
     RiskScore,
     Student,
 )
-from ..proctoring import (
-    bands_contract,
-    build_engine,
-    stream_from_observation,
-)
-from ..proctoring.incidents import incident_builder
+from ..proctoring import bands_contract
 from ..schemas import ProctoringIngestIn, ProctoringSignalOut
 from ..schemas_stage4 import (
     ProctoringMonitorDetail,
@@ -50,14 +43,14 @@ from ..schemas_stage4 import (
     ProctoringMonitorSummary,
     ProctoringReviewIn,
     ProctoringReviewOut,
-    ProctoringStudentItemOut,
 )
+from ..services.proctoring_service import ingest_and_persist
+from .evidence_media_routes import evidence_src
 
 router = APIRouter(prefix="/api/proctoring/monitor", tags=["proctoring-monitor"])
 
 RISK_ORDER = {"NORMAL": 0, "LOW": 1, "ATTENTION": 2, "ELEVATED": 3, "HIGH": 4}
 CONTRACT = bands_contract()
-LEVELS = CONTRACT.get("levels", ["NORMAL", "ATTENTION", "ELEVATED", "HIGH"])
 
 
 def _jobj(text: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -119,7 +112,7 @@ def _incident_card(i: Incident) -> ProctoringMonitorIncidentCard:
             ProctoringMonitorEvidenceCard(
                 id=e.id,
                 evidence_type=e.media_type or "IMAGE",
-                media_url=e.file_path or "",
+                media_url=evidence_src(e),
                 description=e.description or "",
                 captured_at=e.captured_at,
                 incident_id=e.incident_id,
@@ -336,7 +329,7 @@ def monitor_session_detail(
             ProctoringMonitorEvidenceCard(
                 id=e.id,
                 evidence_type=e.media_type or "IMAGE",
-                media_url=e.file_path or "",
+                media_url=evidence_src(e),
                 description=e.description or "",
                 captured_at=e.captured_at,
                 incident_id=e.incident_id,
@@ -367,6 +360,9 @@ def monitor_ingest(
     is persisted into SQL (risk_scores, incidents PENDING, evidence,
     ai_service_events) so the monitor overview/detail are live from SQL.
 
+    Uses the SHARED per-session engine (proctoring.registry) so sustained
+    confirmations/cooldowns/repeats work across ingests.
+
     The engine STILL never auto-verdicts: incidents are always created with
     review_status=PENDING, resolved=False, awaiting the teacher."""
     session_id = None
@@ -395,109 +391,23 @@ def monitor_ingest(
             status_code=422, detail="Proctoring ingest requires an observation payload"
         )
 
-    now = datetime.utcnow()
-    engine = build_engine(exam_session_id=session.id)
-    signal = stream_from_observation(engine, payload.observation)
-
-    # persist events
-    for ev in signal.get("events", []) or []:
-        db.add(
-            AIServiceEvent(
-                exam_session_id=session.id,
-                source=ev.get("source") or "camera",
-                event_type=ev.get("event_type") or "UNKNOWN",
-                severity=ev.get("severity") or "INFO",
-                confidence=ev.get("confidence"),
-                repeat_count=ev.get("repeat_count") or 1,
-                payload=_serialize(ev.get("payload")),
-                occurred_at=ev.get("occurred_at") or now,
-            )
-        )
-
-    # persist risk snapshot
-    risk = signal.get("risk") or {}
-    risk_index = _to_float(risk.get("index_value") or risk.get("index"))
-    risk_level = _risk_label_from_index(risk_index)
-    levels_map = {lv: i for i, lv in enumerate(LEVELS)}
-    band_idx = levels_map.get(risk_level.upper(), 0)
-    db.add(
-        RiskScore(
-            exam_session_id=session.id,
-            level=risk_level.upper(),
-            index_value=risk_index,
-            score=_to_float(risk.get("score")),
-            reason=risk.get("reason") or "",
-            factors=_serialize(risk.get("factors")),
-            recorded_at=now,
-        )
-    )
-
-    incident = None
-    candidates = signal.get("incident_candidates") or []
-    if candidates:
-        c = candidates[0]
-        incident = Incident(
-            exam_session_id=session.id,
-            incident_type=c.get("incident_type") or c.get("type") or "SUSPICIOUS",
-            risk_level=c.get("risk_level") or risk_level,
-            confidence=_to_float(c.get("confidence")),
-            description=c.get("reason") or c.get("description") or "",
-            event_count=c.get("event_count") or 1,
-            event_types=",".join(c.get("event_types") or []) or None,
-            first_event_at=c.get("first_event_at") or now,
-            last_event_at=c.get("last_event_at") or now,
-            resolved=False,
-            review_status="PENDING",
-            created_at=now,
-        )
-        db.add(incident)
-        db.flush()
-        # evidence from the incident snapshot
-        for ev in c.get("evidence") or []:
-            db.add(
-                Evidence(
-                    exam_session_id=session.id,
-                    incident_id=incident.id,
-                    source=ev.get("source") or "camera",
-                    file_path=ev.get("file_path") or ev.get("media_url") or "",
-                    media_type=ev.get("media_type") or "IMAGE",
-                    description=ev.get("description") or "",
-                    metadata=_serialize(ev.get("meta") or ev.get("payload")),
-                    captured_at=ev.get("captured_at") or now,
-                )
-            )
-        audit(
-            db,
-            current_user,
-            action="PROCTORING:INCIDENT_CANDIDATE",
-            entity_type="incident",
-            entity_id=incident.id,
-            details=f"Session {session.id} flagged {c.get('incident_type')} "
-            f"(PENDING review, risk {risk_level}).",
-        )
-
+    result = ingest_and_persist(db, current_user, session, payload.observation)
     audit(
         db,
         current_user,
         action="PROCTORING:SIGNAL_PERSISTED",
         entity_type="exam_session",
         entity_id=session.id,
-        details=f"Ingest persisted risk={risk_level}, events, "
-        f"incidents={bool(incident)} to SQL.",
+        details=f"Ingest persisted risk={result['risk']['level']}, "
+        f"events={result.get('events_count', 0)}, "
+        f"incidents={len(result.get('incident_candidates') or [])} to SQL.",
     )
     db.commit()
     return ProctoringSignalOut(
-        risk={
-            "level": risk_level.upper(),
-            "level_index": band_idx,
-            "index_value": risk_index,
-            "factors": risk.get("factors"),
-        },
-        runs=signal.get("runs"),
-        repeated=signal.get("repeated"),
-        incident_candidates=(
-            [{"incident_id": incident.id, "status": "PENDING"}] if incident else []
-        ),
+        risk=result["risk"],
+        runs=result.get("runs"),
+        repeated=result.get("repeated"),
+        incident_candidates=result.get("incident_candidates"),
     )
 
 
@@ -551,23 +461,3 @@ def monitor_review(
         ok=True,
         message=f"Incident #{incident.id} {action}-ed by teacher.",
     )
-
-
-def _serialize(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    try:
-        import json
-
-        return json.dumps(value, default=str)
-    except Exception:
-        return str(value)
-
-
-def _to_float(value: Any) -> float:
-    try:
-        if value is None:
-            return 0.0
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0

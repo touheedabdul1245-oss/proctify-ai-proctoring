@@ -1,7 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../../api'
+import { useProctoring } from '../../hooks/useProctoring'
 import { ErrorBox, Modal } from '../../components/Ui'
+
+const PROCT_LABEL = {
+  idle: 'Connecting…',
+  active: 'Monitoring',
+  'no-camera': 'No camera — noted',
+  off: 'Proctoring off',
+  done: 'Proctoring stopped',
+  error: 'Monitoring error',
+}
+
+function ProctoringChip({ status }) {
+  return (
+    <span className={`proct-chip proct-${status}`}>
+      <i className="proct-dot" />
+      {PROCT_LABEL[status] || status}
+    </span>
+  )
+}
 
 const OPTIONS = ['A', 'B', 'C', 'D']
 
@@ -68,6 +87,8 @@ export default function ExamPaper() {
   answersRef.current = answers
   deadlineRef.current = deadline
   paperRef.current = paper
+
+  const proct = useProctoring(token, { paused: false })
 
   const goResult = useCallback((s) => {
     if (endedRef.current) return
@@ -271,6 +292,7 @@ export default function ExamPaper() {
           <span className="muted">{paper.question_count} questions · {paper.total_marks} marks</span>
         </div>
         <div className="exam-right">
+          <ProctoringChip status={proct.status} />
           <span className={`autosave-status ${saveState === 'offline' ? 'offline' : ''}`}>
             {saveState === 'offline' ? 'Offline — retrying' : saveState === 'saving' ? 'Saving…' : 'Saved'}
           </span>

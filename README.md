@@ -1,17 +1,20 @@
 # PROCTIFY — AI-Assisted Online Examination Proctoring System
 
 An AI-assisted online examination platform: **admins** manage users, classes and
-enrollment; **teachers** author, schedule and publish exams; **students** take
-them under AI-assisted proctoring.
+enrollment; **teachers** author, schedule, publish and *grade* exams; **students**
+take them under **live AI proctoring**; **teachers review** AI-raised incidents
+and **release** results.
 
-> **Current status — Stage 2 complete & verified.** Stage 1 built the platform
+> **Current status — complete (Stages 1–5).** Stage 1 built the platform
 > foundation (roles, users/classes/enrollment, exam authoring → scheduling →
-> publishing). Stage 2 delivers the **student examination workflow**: exam
-> session lifecycle (create → readiness wizard → start → take → autosave →
-> submit → timeout), server-side auto-grading, and the student result page.
-> The AI service layer (YOLO / MediaPipe / PnP / audio) is still integrated at
-> the **health/readiness level only** — **live AI proctoring is NOT yet
-> implemented** and is the next stage (Stage 3).
+> publishing). Stage 2 delivered the student examination workflow (session
+> lifecycle, autosave, auto-submit, server-side auto-grading). Stage 3 added the
+> pure **AI proctoring engine** (risk bands, sustained events, incidents,
+> evidence). Stage 4 exposed the **teacher live-monitoring + review** surface
+> (incidents are *suspicion-only* — the teacher’s review is the final verdict).
+> Stage 5 completed the product: a **browser→server live proctoring feed**, the
+> **result lifecycle** (grade → publish → release + CSV export), **notifications**
+> and **analytics**.
 
 ---
 
@@ -20,46 +23,69 @@ them under AI-assisted proctoring.
 | Role | Access |
 |------|--------|
 | **Admin** | User management, students + bulk enrollment (CSV), classes/batches, admin dashboard with platform stats and **AI health panel**. |
-| **Teacher** | Create exams, add MCQ questions, schedule with a time window, set SCHEDULED / AVAILABLE / publish, reschedule, archive; exams list with per-exam state. |
-| **Student** | `Assigned Exams` (start/continue/resume), pre-exam readiness wizard, timer-driven exam paper with autosave, submission, result summary, profile. |
+| **Teacher** | Create exams, MCQ questions, schedule/publish/reschedule/archive; **Live Monitor** (per-session risk + incidents + evidence + review actions); **Results** (scorecards, publish, CSV export); **Analytics** (overview + per-exam distributions). |
+| **Student** | `My Exams` (start/continue/resume, result-ready badges), **live proctoring while taking the exam**, result detail after release, **My Results**, notification bell. |
 
 Login redirects by role: `/admin`, `/teacher`, `/student`.
 
 ---
 
-## Stage 1 — What's implemented
+## What's implemented
 
-Backend (FastAPI, SQLite SQL database):
-- Auth & JWT (HS256) with role-based RBAC and role guarding on every route.
+### Platform core (Stages 1–2)
+- Auth & JWT (HS256) with role-based RBAC and per-route role checks.
 - Users, students, classes, enrollment (single + bulk CSV with row validation).
-- Exam lifecycle with state machine:
-  `DRAFT → SCHEDULED → AVAILABLE → ACTIVE → COMPLETED → ARCHIVED`
-  enforced by `config.py` transitions; every mutation is audit-logged.
-- Exam authoring: create (auto code `EX-XXXXXXXX`), MCQ questions
-  (4 options + correct answer), schedule/reschedule, publish.
-- **AI service layer (read-side, ready for Stage 2):**
-  - **Custom-trained YOLO** model («proctify_phone_earphone_v2») — loaded
-    read-only from the `PROCTIFY_V2` weights (never retrained here; wired via
-    `PROCTIFY_YOLO_WEIGHTS_DIR`).
-  - **MediaPipe** face/landmark interface.
-  - **PnP head-pose estimation** (`pnp_interface`).
-  - **Audio / speech detection** (`audio_interface`).
-  - `GET /api/ai/health` (admin) — per-module health report used by the AI
-    health panel. `POST /api/ai/verify` loads/verifies the modules.
+- Exam state machine `DRAFT → SCHEDULED → AVAILABLE → ACTIVE → COMPLETED → ARCHIVED`,
+  audit-logged on every mutation.
+- Exam authoring (auto code `EX-XXXXXXXX`, MCQ with 4 options + correct answer,
+  negative marking), schedule/reschedule/publish, assignment to students/batches.
+- Student exam workflow: session create → readiness wizard → start → timer-driven
+  paper with autosave/heartbeat/resync → submit (manual / timeout `EXPIRED`) →
+  server-side auto-grading with negative marks → submission summary.
 
-Frontend (React 18 + Vite):
-- AuthContext + role guards; `/admin/*`, `/teacher/*`, `/student/*` layouts.
-- Admin: dashboard (stats + AI health), Users, Students (with table), Bulk
-  Enrollment, Classes.
-- Teacher: dashboard, exams list, and a full exam editor (Details / Questions /
-  Assign / Schedule / Preview; MCQ modal; publish).
-- Student: dashboard, Assigned Exams, profile.
+### AI proctoring engine (Stage 3)
+- **Read-only AI service layer** (never retrained/downloaded here): custom-trained
+  **YOLO** phone/earphone weights (`PROCTIFY_YOLO_WEIGHTS_DIR`), **MediaPipe**
+  face/gaze, **PnP** head-pose, **audio/speech** interface. `GET /api/ai/health`
+  + `POST /api/ai/verify`.
+- Pure, deterministic `SessionRisk` engine: observations → event candidates →
+  **sustained confirmation** (≥ per-family sustain window) → per-family
+  **cooldown** gating → distinct **repeat runs** (a run re-counts only after a
+  `EVENT_REPEAT_RESET_SECONDS` gap) → **incident candidates**.
+- Risk bands with hysteresis and factor-weighted index; every band change persists
+  a `risk_scores` snapshot.
+- **Nothing auto-verdicts.** The engine only reports; incidents are created
+  `PENDING` (deduped per session+type) and only a teacher’s review closes them.
+- Evidence images stored under `datastore/evidence/<session_token>/`, served back
+  via `/api/evidence/{path}` (traversal-guarded).
 
-## Not implemented (Stage 3+)
-- Real-time AI proctoring: sending frames to YOLO/MediaPipe/PnP/audio during a
-  live exam, incident detection & flags, anti-cheat alerts.
-- AI-based reporting and analytics, teacher live-monitoring of in-progress
-  sessions and their incident feeds.
+### Live proctoring + monitoring (Stage 4)
+- Teacher **Live Monitor**: sessions with risk level, live state, pending review
+  counts, camera/mic, recent events; per-session risk history bars, AI event
+  timeline, incident cards with review actions (CONFIRM / DISMISS / RESOLVE) and
+  teacher remarks; evidence thumbnails.
+- Shared **per-session engine registry**: one engine instance per active session
+  (bounded, thread-safe), dropped when the session closes — so sustained signals
+  graduate across requests and monitoring reflects the *same* engine state.
+
+### Final product (Stage 5)
+- **Student live feed** (browser→server): the exam paper captures camera frames,
+  downsizes to JPEG < 300 KB and posts them at the server-advertised cadence
+  (`POST /api/student/sessions/{token}/proctoring`, owner-checked, rate-limited
+  with 429 + back-off). The server decodes the frame, runs the AI pipeline and
+  feeds the shared per-session engine. Camera-less students still send an honest
+  "no camera" observation so coverage gaps surface instead of disappearing.
+- **Results**: on submit/expiry the session is graded, a `Result` row is written
+  (unique per exam+student), and the engine is released. Teachers see a
+  scorecard grid, review detail (with risk + incident context), **publish** a
+  result (idempotent, audit-logged, notifies the student) and **export CSV**
+  (formula-injection guarded). Students see the published scorecard with a
+  per-question answer review and their proctoring summary.
+- **Notifications**: per-user inbox (RESULT published, session closed, incident
+  raised…), unread count polling and read-all in the top-bar bell.
+- **Analytics**: role-aware overview (totals, risk distribution, incident
+  pipeline, recent activity) and per-exam drill-down (score distribution,
+  question difficulty / facility, incident types, 10-day event trend).
 
 ---
 
@@ -68,21 +94,27 @@ Frontend (React 18 + Vite):
 ```
 frontend/  (React + Vite, dev port 5173, proxies /api → 127.0.0.1:8100)
     API_BASE '/api' · AuthContext · role-gated pages (admin/teacher/student)
+    hooks/useProctoring.js   live camera feed to the server engine
 
 backend/   (FastAPI package, port 8100)
-    main.py            app + CORS + bootstrap admin seed
+    main.py            app + CORS + bootstrap admin seed + Stage-5 routers
     config.py          settings (SQL path, JWT, exam states, YOLO weights dir)
-    database.py        SQLAlchemy, init_db
-    models.py / schemas.py
+    database.py        SQLAlchemy, init_db + Stage-5 migration
+    models.py / schemas.py / schemas_stage5.py
     auth.py            JWT + authorize_roles
-    routes/            auth · users · classes · exams · students · ai
+    routes/            auth · users · classes · exams · students · ai ·
+                       proctoring_monitor · student_proctoring (feed) ·
+                       result_routes · analytics · evidence_media · notifications
+    proctoring/        engine (SessionRisk) · incidents · temporal · constants ·
+                       registry (per-session engines)
     ai_service/        service + yolo / mediapipe / pnp / audio interfaces
-proctify.db            SQL database (primary store) — datastore/proctify.db
+    services/          proctoring_service (shared ingest+persist) · notifications
+datastore/proctify.db   SQL database (primary store); datastore/evidence/  media
 ```
 
 - **Primary database: SQL** (SQLite by default). Override with `DATABASE_URL`
   (e.g. PostgreSQL) — all storage is relational SQL.
-- Frontend dials backend through `/api` (Vite proxy), API on `8100`.
+- Frontend dials the backend through `/api` (Vite proxy), API on `8100`.
 
 ---
 
@@ -113,12 +145,8 @@ npm run dev
 ```
 
 Open `http://localhost:5173` (Vite binds IPv6 `::1` — use `localhost`, not
-`127.0.0.1`). If 5173 is taken by another Vite instance (common when the older
-PROCTIFY_V2 project is also running), launch on a free port and open that one:
-
-```bash
-npm run dev -- --port 5174    # → http://localhost:5174
-```
+`127.0.0.1`). If 5173 is taken by another Vite instance, use
+`npm run dev -- --port 5174`.
 
 ### 3. Default accounts
 
@@ -132,49 +160,38 @@ npm run dev -- --port 5174    # → http://localhost:5174
 
 ## Testing
 
-Backend API smoke (61 checks — auth, users, classes, enrollment, exam CRUD,
-state transitions, scheduling, publish):
+Backend suites run against temporary SQLite databases (the real DB is never
+touched by tests):
 
 ```bash
-python tests/stage1_smoke.py            # or wherever the smoke script lives
+# Full backend suite (Stages 1–5): pytest
+python -m pytest backend/tests -q          # 35 passed
+
+# Stage-2 standalone end-to-end script
+python test_stage2_backend.py              # 58 passed
+
+# Frontend unit tests (node --test, no test runner dependency)
+cd frontend && node --test                 # 10 passed
+
+# Production build
+cd frontend && npm run build               # vite build (66 modules)
 ```
-
-Browser UI smoke (`browser_smoke.cjs`) — real UI over real API: 3-role login +
-redirects, admin dashboard + AI health panel, all admin pages, students table,
-student dashboard/exams/profile, teacher exams list, **and the full teacher
-lifecycle through the UI** (create exam → code → add MCQ → schedule → publish).
-Run it with `NODE_PATH` pointed at `frontend/node_modules` (puppeteer-core lives
-there):
-
-```powershell
-$env:NODE_PATH = "C:\...\proooctify\frontend\node_modules"
-node C:\...\browser_smoke.cjs
-```
-
----
 
 ## Current verification status
 
-Stage 1:
-- Backend API smoke: **61/61 PASS**
-- Browser UI smoke (all three roles, full teacher flow): **21/21 PASS**
-- Exam lifecycle through real UI verified end-to-end (create → question → schedule → publish).
+- Backend pytest suite (Stages 1–5): **35/35 PASS** — auth, users, classes,
+  enrollment, exam CRUD/lifecycle, session workflow, AI health, proctoring engine
+  (events/cooldown/repeats/incidents/risk), monitor endpoints + incident review,
+  student live feed (rate limit, config gating, persistence + incident
+  graduation), results (detail/publish/CSV), analytics, evidence media,
+  notifications, migration.
+- Stage-2 backend end-to-end: **58/58 PASS**.
+- Frontend unit tests: **10/10 PASS**. Production build green.
+- API/engine contract verified end-to-end: a sustained repeated observation
+  graduates events → persists → surfaces in monitor → creates a PENDING incident
+  → teacher CONFIRM/RESOLVE.
 
-Stage 2:
-- Backend end-to-end test (`test_stage2_backend.py`, temp SQLite DB):
-  **58/58 PASS** — session lifecycle, readiness wizard gating, paper (no answer
-  leakage), answer autosave/overwrite, heartbeat, submit + idempotent re-submit,
-  grading with negative marks, window gating, timeout auto-submit (EXPIRED), and
-  Stage 1 regression.
-- Browser end-to-end (headless Chrome, live backend + Vite): **23/23 PASS** —
-  login → My Exams → readiness wizard (identity / camera / mic / env) → start →
-  4 answers + autosave + mark-for-review → simulated network loss (offline banner
-  + recovery) → submit → result summary showing counts and SUBMITTED status.
-- `npm run build` green (59 modules).
-
-> Note: single benign console error (`404` favicon) — cosmetic, not an app bug.
-
----
-
-Stage 3 next: the live AI proctoring pipeline (real-time frame/audio analysis,
-incident detection, teacher monitoring) + AI-based reporting.
+> Note: the camera feed requires a browser with camera permission (or falls back
+> to the honest "no camera" mode); the YOLO weights directory must be set
+> (`PROCTIFY_YOLO_WEIGHTS_DIR`) for real object detection — otherwise the engine
+> degrades gracefully on the other signals.

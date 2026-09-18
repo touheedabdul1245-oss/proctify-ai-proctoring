@@ -36,14 +36,30 @@ from .constants import (
     COOLDOWN_BY_FAMILY,
     EVENT_COOLDOWN_SECONDS,
     EVENT_MIN_SUSTAINED_SECONDS,
+    EVENT_REPEAT_RESET_SECONDS,
     EVENT_SOURCES,
+    EVENT_SPEECH,
     SIMULATE_ALLOWED,
+    TRUST_BAND_CEILING,
+    TRUST_BASE_SCORE,
+    TRUST_CEILING,
+    TRUST_CONFIDENCE_FLOOR,
+    TRUST_EVENT_WEIGHTS,
+    TRUST_EVENT_WEIGHT_DEFAULT,
+    TRUST_FLOOR,
+    TRUST_MAX_PENALTY_PER_INGEST,
+    TRUST_PENALTY_BASE,
+    TRUST_RECOVERY_CLEAN_SECONDS,
+    TRUST_RECOVERY_CONSTANT_SECONDS,
+    TRUST_REPEAT_ESCALATION_PER_STEP,
+    TRUST_REPEAT_MAX_STEPS,
+    TRUST_SUSTAINED_REF_SECONDS,
 )
 from .events import events_from_observation
 from .evidence import store_audio, store_image
 from .incidents import IncidentBuilder, incident_builder
 from .observation import Observation, from_frame
-from .risk import RiskState, bands_contract, build_risk_state
+from .risk import RiskState, bands_contract, build_risk_state, feature_index
 from .temporal import CooldownGate, _monotonic
 
 INGEST_SIMULATE_ALLOWED: bool = bool(SIMULATE_ALLOWED)
@@ -103,6 +119,13 @@ class SessionRisk:
         self._sustained: Dict[str, Dict[str, Any]] = {}
         self._repeated: Dict[str, int] = {}
         self._last: Optional[Dict[str, Any]] = None
+        # Stage-6 numeric trust start: every session starts at 100.
+        self._trust = TRUST_BASE_SCORE
+        self._trust_last_ts: Optional[float] = None
+        self._trust_last_details: Dict[str, Any] = {
+            "source": "baseline", "score": TRUST_BASE_SCORE,
+            "delta": 0.0, "reason": "session start", "families": [],
+        }
 
     # ------------------------------------------------------------------
     def ingest(self, observation: Dict[str, Any],
@@ -121,8 +144,7 @@ class SessionRisk:
             # --- sustained graduation ----------------------------------
             # A single short glance is noise; a sustained run confirms.
             state = self._sustained.setdefault(family, {
-                "count": 0, "first": now, "last": now,
-                "event": evt,
+                "count": 0, "first": now, "last": now, "event": evt,
             })
             window = EVENT_MIN_SUSTAINED_SECONDS.get(family, 2.0)
             if now - state["first"] >= window:
@@ -136,7 +158,19 @@ class SessionRisk:
 
         # --- repeat tracking (distinct sustained runs) ------------------
         # A run only counts again after a gap >= repeat reset (per family).
+        # This is what graduates incident candidates: the incident builder
+        # consumes ``repeated`` (families with distinct re-runs), so it must
+        # be updated here — the engine never auto-verdicts, it only reports.
+        for evt in confirmed:
+            family = _family_of(evt) or "UNKNOWN"
+            state = self._sustained.setdefault(family, {"last_fire": now})
+            if self._runs.get(family, 0) > 1:
+                gap = now - float(state.get("last_fire", 0.0) or 0.0)
+                if gap >= EVENT_REPEAT_RESET_SECONDS:
+                    self._repeated[family] = self._repeated.get(family, 0) + 1
+            state["last_fire"] = now
         risk_result = self._update_risk(confirmed, now)
+        self._apply_trust(confirmed, now)
 
         if persist and confirmed:
             self._maybe_evidence(confirmed, now)
@@ -156,6 +190,7 @@ class SessionRisk:
             "events": confirmed,
             "risk": snapshot,
             "incident_candidates": incident_candidates,
+            "trust": dict(self._trust_last_details),
         }
         return dict(self._last)
 
@@ -171,12 +206,91 @@ class SessionRisk:
         index = feature_index(
             frame_event_weight=0.0,
             sustained_events=dict(self._runs),
-            speech_weight=float(by_family.get(EVENT_SOURCES.get(EVENT_SPEECH, ""), 0.0)),
+            speech_weight=float(by_family.get(EVENT_SPEECH, 0.0)),
             temporal_weight=0.0,
             incident_weight=0.0,
         )
         self.risk.update(index)
         return True
+
+    # ------------------------------------------------------------------
+    # Stage 6 — numeric trust (0..100). See constants.py for the formula.
+    # ------------------------------------------------------------------
+    def _apply_trust(self, confirmed: List[Dict[str, Any]], now: float) -> float:
+        """Apply penalties (confirmed events) or hysteresis-gated recovery,
+        updating ``self._trust`` + ``self._trust_last_details``. Returns deltas."""
+        prev = self._trust
+
+        if confirmed:
+            # --- penalty: confirmed, cooldown-synced events only ---------
+            self._trust_last_ts = now
+            by_family: Dict[str, float] = {}
+            for evt in confirmed:
+                family = _family_of(evt) or "UNKNOWN"
+                by_family[family] = max(by_family.get(family, 0.0),
+                                        float(evt.get("confidence", 0.0)))
+            total = 0.0
+            families: List[str] = []
+            reasons: List[str] = []
+            for family, conf in by_family.items():
+                if conf < TRUST_CONFIDENCE_FLOOR:
+                    continue
+                state = self._sustained.get(family, {})
+                first = float(state.get("first", now) or now)
+                sustained_seconds = max(0.0, now - first)
+                duration = min(1.0, sustained_seconds / TRUST_SUSTAINED_REF_SECONDS)
+                runs = int(self._runs.get(family, 0) or 1)
+                steps = min(max(runs - 1, 0), TRUST_REPEAT_MAX_STEPS)
+                repeat = 1.0 + TRUST_REPEAT_ESCALATION_PER_STEP * steps
+                weight = TRUST_EVENT_WEIGHTS.get(family, TRUST_EVENT_WEIGHT_DEFAULT)
+                delta = TRUST_PENALTY_BASE * weight * conf * duration * repeat
+                total += delta
+                families.append(family)
+                reasons.append(
+                    f"{family} conf={conf:.2f} sustained={sustained_seconds:.0f}s "
+                    f"runs={runs} penalized {delta:.2f}"
+                )
+            total = min(total, TRUST_MAX_PENALTY_PER_INGEST)
+            self._trust = max(TRUST_FLOOR, self._trust - total)
+            self._trust_last_details = {
+                "source": "penalty",
+                "score": round(min(TRUST_CEILING, max(TRUST_FLOOR, self._trust)), 2),
+                "delta": round(self._trust - prev, 2),
+                "reason": "; ".join(reasons) or "confirmed events",
+                "families": families,
+            }
+            return self._trust - prev
+
+        # --- recovery: only after a sustained clean period, capped by the
+        #     current hysteresis band ceiling (frozen at 0 while HIGH). ----
+        if self._trust_last_ts is not None and \
+                now - self._trust_last_ts >= TRUST_RECOVERY_CLEAN_SECONDS:
+            ceiling = TRUST_BAND_CEILING.get(self.risk.label, TRUST_BASE_SCORE)
+            if self._trust < ceiling:
+                delta = (ceiling - self._trust) * (
+                    (now - self._trust_last_ts) / TRUST_RECOVERY_CONSTANT_SECONDS
+                )
+                delta = min(delta, ceiling - self._trust)
+                self._trust = self._trust + delta
+                self._trust_last_details = {
+                    "source": "recovery",
+                    "score": round(min(TRUST_CEILING, max(TRUST_FLOOR, self._trust)), 2),
+                    "delta": round(self._trust - prev, 2),
+                    "reason": f"clean for {now - self._trust_last_ts:.0f}s "
+                              f"(band {self.risk.label}, ceiling {ceiling:.0f})",
+                    "families": [],
+                }
+                return self._trust - prev
+        # steady state: unchanged trust
+        self._trust_last_details = {
+            "source": "steady",
+            "score": round(self._trust, 2),
+            "delta": 0.0,
+            "reason": "" if confirmed else "no change",
+            "families": [f for evt in confirmed
+                         for f in [(_family_of(evt) or "UNKNOWN")]],
+        }
+        return 0.0
 
     def _maybe_evidence(self, confirmed: List[Dict[str, Any]], now: float) -> None:
         """Store evidence only if this engine was told it may (sim path)."""

@@ -27,6 +27,7 @@ def init_db():
 
     _migrate_stage2(engine)
     _migrate_stage3(engine)
+    _migrate_stage5(engine)
     Base.metadata.create_all(bind=engine)
 
 
@@ -175,6 +176,45 @@ def _migrate_stage3(engine):
                     add_column("evidence", "description", "TEXT")
                 if "metadata" in missing:
                     add_column("evidence", "metadata", "TEXT")
+
+        raw.commit()
+    finally:
+        raw.close()
+
+
+def _migrate_stage5(engine):
+    """Stage 5: extend the reserved ``results`` table with publishing columns.
+
+    Earlier stages created ``results`` with the base score fields only. Stage 5
+    adds ``published_by`` / ``published_at`` (and the NOTIFICATION table) to the
+    same store. The unique (exam_id, student_id_db) index is created only if
+    absent — SQLite cannot ADD a UNIQUE constraint via ALTER, so a UNIQUE INDEX
+    carries the same semantics and lets ``create_all`` define it fresh on new
+    databases.
+    """
+    if not engine.dialect.name == "sqlite":
+        return
+    raw = engine.raw_connection()
+    try:
+        cur = raw.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        existing = {r[0] for r in cur.fetchall()}
+
+        if "results" in existing:
+            cur.execute("PRAGMA table_info(results)")
+            cols = {r[1] for r in cur.fetchall()}
+            if "published_by" not in cols:
+                cur.execute("ALTER TABLE results ADD COLUMN published_by INTEGER")
+            if "published_at" not in cols:
+                cur.execute("ALTER TABLE results ADD COLUMN published_at DATETIME")
+            cur.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name='uq_result_exam_student'"
+            )
+            if not cur.fetchone():
+                cur.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_result_exam_student "
+                    "ON results (exam_id, student_id_db)"
+                )
 
         raw.commit()
     finally:

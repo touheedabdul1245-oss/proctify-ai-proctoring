@@ -21,12 +21,22 @@ function useSessionStates(list) {
   return { states: data || {}, loading, refresh }
 }
 
+function usePublishedResults() {
+  const { data } = useAsync(() => api('/student/results'), [])
+  const map = {}
+  for (const r of data || []) {
+    if (r.published && r.exam_id && r.session_token) map[r.exam_id] = r
+  }
+  return map
+}
+
 export default function AssignedExams() {
   const navigate = useNavigate()
   const [filter, setFilter] = useState('')
   const list = useAsync(() => api(`/student/exams?include_unpublished=true`), [])
   const [detail, setDetail] = useState(null)
   const session = useSessionStates(list)
+  const published = usePublishedResults()
 
   const cols = [
     { key: 'title', label: 'Exam' },
@@ -38,6 +48,19 @@ export default function AssignedExams() {
     { key: 'total_marks', label: 'Marks' },
     { key: 'question_count', label: 'Questions' },
     {
+      key: 'result',
+      label: 'Result',
+      render: (r) => {
+        if (!published[r.exam_id]) return <span className="muted">—</span>
+        const res = published[r.exam_id]
+        return (
+          <span className="badge badge-published">
+            {res.percent != null ? `${res.percent}%` : 'Ready'}
+          </span>
+        )
+      },
+    },
+    {
       key: 'action',
       label: 'Action',
       render: (r) => {
@@ -48,6 +71,9 @@ export default function AssignedExams() {
         if (st.status === 'ACTIVE') {
           label = 'Resume exam'
           target = `/student/exam/${st.session_token}`
+        } else if (published[r.exam_id]?.session_token) {
+          label = 'View result'
+          target = `/student/result/${published[r.exam_id].session_token}`
         } else if (st.status === 'SUBMITTED' || st.status === 'EXPIRED') {
           label = st.status === 'EXPIRED' ? 'Expired' : 'Submitted'
           target = `/student/result/${st.session_token}`

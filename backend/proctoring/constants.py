@@ -236,3 +236,68 @@ RISK_WEIGHTS = {
     EVENT_CAMERA_UNAVAILABLE: RISK_WEIGHT_UNAVAILABLE,
     EVENT_AUDIO_UNAVAILABLE: RISK_WEIGHT_UNAVAILABLE,
 }
+
+# --------------------------------------------------------------------------
+# Stage 6 — Numeric Trust Score (0..100).
+#
+# TRUST is a 0..100 score derived from THE SAME confirmed, cooldown-synced
+# event stream that drives the risk bands — it is NOT a second risk model.
+# The full formula (implemented in engine.py and mirrored here as config):
+#
+#     start                         100 per session (clamped 0..100)
+#     penalty per confirmed event   TRUST_PENALTY_BASE
+#                                   * TRUST_EVENT_WEIGHTS[family]
+#                                   * confidence (floor TRUST_CONFIDENCE_FLOOR)
+#                                   * min(1, sustained / TRUST_SUSTAINED_REF_SECONDS)
+#                                   * (1 + TRUST_REPEAT_ESCALATION_PER_STEP
+#                                          * min(runs-1, TRUST_REPEAT_MAX_STEPS))
+#     per-ingest cap                TRUST_MAX_PENALTY_PER_INGEST
+#     recovery                      exponential approach toward the CURRENT band
+#                                   ceiling, applied only after at least
+#                                   TRUST_RECOVERY_CLEAN_SECONDS with NO
+#                                   confirmed events:
+#                                       += (ceiling - trust) * dt / TRUST_RECOVERY_CONSTANT_SECONDS
+#
+# RULES enforced in engine.py:
+#   * AI raw detections or PENDING incident candidates NEVER move trust; only
+#     *confirmed* (sustained + cooldown-synced) events do. No AI auto-verdict.
+#   * Per-family cooldown already dedupes the same underlying observation, so
+#     a single behaviour is never double-penalized.
+#   * Incidents (teacher-confirmed/dismissed) stay separate from the raw
+#     score; creating an incident adds NO second penalty.
+#   * Recovery is gated by the hysteresis-defined risk band: the ceiling is
+#     the current band's ceiling (synchronized with RISK_LEVELS above) and is
+#     frozen at 0 while the band is HIGH. There is no arbitrary restore.
+# --------------------------------------------------------------------------
+TRUST_BASE_SCORE = 100.0
+TRUST_FLOOR = 0.0
+TRUST_CEILING = 100.0
+
+TRUST_PENALTY_BASE = 4.0
+TRUST_EVENT_WEIGHTS = {
+    EVENT_PHONE: 1.0,
+    EVENT_EARPHONE: 1.0,
+    EVENT_EXTRA_PERSON: 1.2,
+    EVENT_FACE_MISSING: 0.5,
+    EVENT_HEAD_DEVIATION: 0.6,
+    EVENT_GAZE_DEVIATION: 0.5,
+    EVENT_SPEECH: 0.5,
+    EVENT_CAMERA_UNAVAILABLE: 0.3,
+    EVENT_AUDIO_UNAVAILABLE: 0.3,
+}
+TRUST_EVENT_WEIGHT_DEFAULT = 0.8
+TRUST_CONFIDENCE_FLOOR = 0.3
+TRUST_SUSTAINED_REF_SECONDS = 8.0
+TRUST_REPEAT_ESCALATION_PER_STEP = 0.4
+TRUST_REPEAT_MAX_STEPS = 5
+TRUST_MAX_PENALTY_PER_INGEST = 20.0
+TRUST_RECOVERY_CLEAN_SECONDS = 60.0
+TRUST_RECOVERY_CONSTANT_SECONDS = 90.0
+
+# Ceiling per risk band (synchronized with RISK_LEVELS / RISK_BAND_UPPER).
+TRUST_BAND_CEILING = {
+    RISK_LABELS[0]: 100.0,  # NORMAL
+    RISK_LABELS[1]: 85.0,   # ATTENTION
+    RISK_LABELS[2]: 65.0,   # ELEVATED
+    RISK_LABELS[3]: 0.0,    # HIGH -> frozen at floor
+}

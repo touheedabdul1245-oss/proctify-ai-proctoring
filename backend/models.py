@@ -32,6 +32,7 @@ class User(Base):
     student_profile = relationship("Student", back_populates="user", uselist=False, cascade="all, delete-orphan")
     teacher_profile = relationship("Teacher", back_populates="user", uselist=False, cascade="all, delete-orphan")
     exams_created = relationship("Exam", back_populates="creator")
+    notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
 
 
 class Student(Base):
@@ -53,6 +54,7 @@ class Student(Base):
     enrollments = relationship("Enrollment", back_populates="student")
     assignments = relationship("ExamAssignment", back_populates="student")
     sessions = relationship("ExamSession", back_populates="student")
+    results = relationship("Result", back_populates="student")
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -167,6 +169,7 @@ class Exam(Base):
     assignments = relationship("ExamAssignment", back_populates="exam", cascade="all, delete-orphan")
     batch_assignments = relationship("ExamBatchAssignment", back_populates="exam", cascade="all, delete-orphan")
     sessions = relationship("ExamSession", back_populates="exam")
+    results = relationship("Result", back_populates="exam")
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -257,6 +260,7 @@ class ExamSession(Base):
     proctoring_events = relationship("AIServiceEvent", back_populates="session", cascade="all, delete-orphan")
     incidents = relationship("Incident", back_populates="session", cascade="all, delete-orphan")
     risk_rows = relationship("RiskScore", back_populates="session", cascade="all, delete-orphan")
+    trust_rows = relationship("TrustScore", back_populates="session", cascade="all, delete-orphan")
     evidence_records = relationship("Evidence", back_populates="session", cascade="all, delete-orphan")
 
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -389,6 +393,34 @@ class RiskScore(Base):
     session = relationship("ExamSession", back_populates="risk_rows")
 
 
+class TrustScore(Base):
+    """Stage 6: numeric Trust Score (0..100) history per session.
+
+    Kept SEPARATE from the suspicion bands: ``risk_scores`` labels suspicion,
+    ``trust_scores`` stores the 0..100 AI-derived score and every step that
+    changed it (baseline, penalty from a confirmed AI event, hysteresis-gated
+    recovery). The engine keeps only the live in-memory value; SQL is the
+    source of truth for the history. Teacher confirmed/dismissed incidents
+    are NOT re-scored here — they live in ``incidents`` for human review.
+
+    All values are [0, 100]; ``delta`` is negative for penalties, positive for
+    recovery, 0 for the baseline row.
+    """
+    __tablename__ = "trust_scores"
+
+    id = Column(Integer, primary_key=True)
+    exam_session_id = Column(Integer, ForeignKey("exam_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    trust_score = Column(Float, nullable=False)
+    delta = Column(Float, nullable=False, default=0.0)
+    risk_level = Column(String(20), nullable=False, default="NORMAL")
+    source = Column(String(20), nullable=True)  # baseline | penalty | recovery
+    reason = Column(Text, nullable=True)
+    event_types = Column(Text, nullable=True)  # comma-separated families that drove this step
+    recorded_at = Column(DateTime, default=datetime.utcnow)
+
+    session = relationship("ExamSession", back_populates="trust_rows")
+
+
 class Evidence(Base):
     """Stage 3: captured evidence snapshot (image/audio) + metadata.
 
@@ -413,8 +445,17 @@ class Evidence(Base):
 
 
 class Result(Base):
-    """Reserved for Stage 5: final result records."""
+    """Stage 5: final per-(exam, student) result record.
+
+    Written once when the exam session is finalized (submitted/expired) and
+    kept unpublished until a teacher explicitly publishes it. SQL is the single
+    source of truth; publishing is an audited, teacher-owned action that also
+    notifies the student.
+    """
     __tablename__ = "results"
+    __table_args__ = (
+        UniqueConstraint("exam_id", "student_id_db", name="uq_result_exam_student"),
+    )
 
     id = Column(Integer, primary_key=True)
     exam_id = Column(Integer, ForeignKey("exams.id", ondelete="CASCADE"), nullable=False)
@@ -422,9 +463,37 @@ class Result(Base):
     score = Column(Float, nullable=True)
     total_marks = Column(Integer, nullable=True)
     percent = Column(Float, nullable=True)
-    result_status = Column(String(20), nullable=True)
+    result_status = Column(String(20), nullable=True)  # GRADED | PASS | FAIL
     published = Column(Boolean, default=False, nullable=False)
+    published_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    published_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    exam = relationship("Exam", back_populates="results")
+    student = relationship("Student", back_populates="results")
+
+
+class Notification(Base):
+    """Stage 5: in-app notifications (spam-controlled).
+
+    One row per meaningful event (incident created, incident reviewed, result
+    published, exam published, session submitted). Nobody is notified for
+    routine per-ingest churn; each notification is an auditable, low-volume
+    signal that the UI surfaces via the bell.
+    """
+    __tablename__ = "notifications"
+    __table_args__ = (Index("ix_notifications_user_read", "user_id", "read"),)
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    type = Column(String(30), nullable=False)  # INCIDENT | REVIEW | RESULT | EXAM | SESSION
+    title = Column(String(255), nullable=False)
+    body = Column(Text, nullable=True)
+    link = Column(String(255), nullable=True)
+    read = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user = relationship("User", back_populates="notifications")
 
 
 class AuditLog(Base):

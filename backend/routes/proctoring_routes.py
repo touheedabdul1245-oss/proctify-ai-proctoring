@@ -22,10 +22,10 @@ from ..auth import require_admin, require_teacher
 from ..proctoring import (
     INGEST_SIMULATE_ALLOWED,
     bands_contract,
-    build_engine,
     simulate_allowed,
     stream_from_observation,
 )
+from ..proctoring.registry import get_engine
 from ..schemas import (
     ProctoringBandsOut,
     ProctoringIngestIn,
@@ -68,7 +68,10 @@ def proctoring_ingest(payload: ProctoringIngestIn,
             detail="Proctoring ingest requires an 'observation' payload",
         )
 
-    engine = build_engine(exam_session_id=session_id)
+    # The engine is session-scoped and intentionally shared across requests
+    # (sustained confirmations / cooldowns / repeat tracking need ONE instance
+    # per exam session). See proctoring.registry.
+    engine, _meta = get_engine(session_id)
     signal = stream_from_observation(engine, observation)
     return ProctoringSignalOut(
         risk=signal.get("risk", {}),

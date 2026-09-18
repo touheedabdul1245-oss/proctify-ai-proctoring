@@ -56,7 +56,8 @@ function EvidenceThumb({ ev }) {
     isImage &&
     (ev.media_url?.startsWith('data:') ||
       ev.media_url?.startsWith('http://') ||
-      ev.media_url?.startsWith('https://'))
+      ev.media_url?.startsWith('https://') ||
+      ev.media_url?.startsWith('/api/evidence/'))
   return (
     <div className="evidence-card">
       {loadable ? (
