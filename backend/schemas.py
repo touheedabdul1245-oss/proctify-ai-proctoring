@@ -1,5 +1,5 @@
 from datetime import datetime, date
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
 
@@ -440,3 +440,43 @@ class SubmitResponse(BaseModel):
     submitted_at: Optional[datetime] = None
     auto: bool = False
     message: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Stage 3 — proctoring ingest + risk/incident surfaces
+# ---------------------------------------------------------------------------
+
+class ProctoringIngestIn(BaseModel):
+    """One client payload for the proctoring ingest endpoint.
+
+    ``session_token`` is the exam-session token the student is running under.
+    Exactly one of ``observation`` / ``frame_data_url`` should be present:
+      * ``observation`` — a decoded observation dict (object detections, face,
+        head pose, audio flags) produced by the client/AI layer;
+      * ``frame_data_url`` — a base64 data-URL image; decoded server-side into
+        a camera observation. ``camera_available`` may accompany it.
+    ``camera_available`` / ``audio_available`` flags are used when only a raw
+    frame is supplied so availability gating stays honest.
+    """
+
+    session_token: str = Field(min_length=8)
+    observation: Optional[Dict[str, Any]] = None
+    frame_data_url: Optional[str] = None
+    camera_available: bool = True
+    audio_available: bool = True
+
+
+class ProctoringSignalOut(BaseModel):
+    """Compact, deterministic signal dict returned per ingest (the engine's
+    snapshot contract). Incidents are ALWAYS PENDING for human review; risk
+    only ever labels suspicion — never a verdict."""
+
+    risk: Dict[str, Any]
+    runs: Optional[Dict[str, int]] = None
+    repeated: Optional[Dict[str, int]] = None
+    incident_candidates: Optional[List[Dict[str, Any]]] = None
+
+
+class ProctoringBandsOut(BaseModel):
+    bands: Dict[str, Any]
+    simulate_allowed: bool = False

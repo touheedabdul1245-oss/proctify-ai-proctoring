@@ -54,3 +54,47 @@ USER_ROLES = ["student", "teacher", "admin"]
 
 # Stage 2: pre-exam identity still-capture storage (metadata lives in SQL).
 SESSION_PHOTO_DIR = BASE_DIR / "datastore" / "session_photos"
+
+# ---------------------------------------------------------------------------
+# Stage 3 — AI proctoring engine configuration.
+# All AI assets are EXISTING components referenced read-only. Nothing here is
+# trained, downloaded or replaced.
+# ---------------------------------------------------------------------------
+
+# MediaPipe face landmarking.
+# Prefer the existing MediaPipe Task asset from PROCTIFY_V2 when present;
+# otherwise fall back to the bundled solutions.face_mesh model.
+FACE_LANDMARKER_MODEL_PATH = Path(
+    os.environ.get(
+        "PROCTIFY_FACE_LANDMARKER_MODEL_PATH",
+        r"C:\Users\touhe\PROCTIFY_V2\models\face_landmarker\face_landmarker.task",
+    )
+)
+MEDIAPIPE_MAX_FACES = int(os.environ.get("PROCTIFY_MEDIAPIPE_MAX_FACES", 20))
+MEDIAPIPE_MIN_DETECTION_CONFIDENCE = float(
+    os.environ.get("PROCTIFY_MEDIAPIPE_MIN_DETECTION_CONFIDENCE", 0.5)
+)
+
+# Head-pose (PnP) — thresholds in degrees for "deviation from frontal".
+HEAD_POSE_YAW_THRESHOLD = float(os.environ.get("PROCTIFY_HEAD_POSE_YAW_THRESHOLD", 28.0))
+HEAD_POSE_PITCH_THRESHOLD = float(os.environ.get("PROCTIFY_HEAD_POSE_PITCH_THRESHOLD", 26.0))
+
+# Gaze deviation — normalized eye-offset beyond which gaze is considered off-screen.
+GAZE_DEVIATION_THRESHOLD = float(os.environ.get("PROCTIFY_GAZE_DEVIATION_THRESHOLD", 0.32))
+
+# Audio voice-activity detection.
+AUDIO_SPEECH_RMS_THRESHOLD = float(os.environ.get("PROCTIFY_AUDIO_SPEECH_RMS_THRESHOLD", 0.012))
+AUDIO_ANALYSIS_WINDOW_SECONDS = float(os.environ.get("PROCTIFY_AUDIO_ANALYSIS_WINDOW_SECONDS", 2.0))
+
+# Proctoring engine.
+PROCTORING_ENABLED = os.environ.get("PROCTIFY_PROCTORING_ENABLED", "1") != "0"
+# When 1, the observation API honors an explicit "detections" override payload.
+# Used ONLY by deterministic tests/CI. Disabled in production.
+PROCTORING_SIMULATE_ALLOWED = os.environ.get("PROCTIFY_PROCTORING_SIMULATE_ALLOWED", "0") == "1"
+# Client-visible status cadence hint (the student app polls at ~this interval).
+PROCTORING_CLIENT_POLL_INTERVAL_SECONDS = int(
+    os.environ.get("PROCTIFY_PROCTORING_CLIENT_POLL_INTERVAL_SECONDS", 5)
+)
+
+# Evidence snapshot storage (metadata lives in SQL).
+EVIDENCE_DIR = BASE_DIR / "datastore" / "evidence"

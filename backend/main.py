@@ -63,6 +63,7 @@ from .routes.exam_routes import router as exam_router          # noqa: E402
 from .routes.student_routes import router as student_router    # noqa: E402
 from .routes.session_routes import router as session_router    # noqa: E402
 from .routes.ai_routes import router as ai_router              # noqa: E402
+from .routes.proctoring_routes import router as proctoring_router  # noqa: E402
 
 app.include_router(auth_router)
 app.include_router(user_router)
@@ -71,6 +72,7 @@ app.include_router(exam_router)
 app.include_router(student_router)
 app.include_router(session_router)
 app.include_router(ai_router)
+app.include_router(proctoring_router)
 
 
 @app.get("/api/health")

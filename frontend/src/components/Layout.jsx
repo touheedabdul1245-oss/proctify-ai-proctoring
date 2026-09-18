@@ -13,6 +13,7 @@ const NAV = {
     { to: '/teacher', label: 'Dashboard', end: true },
     { to: '/teacher/exams', label: 'Exams' },
     { to: '/teacher/exams/new', label: 'Create Exam' },
+    { to: '/teacher/proctoring', label: 'Proctoring' },
   ],
   student: [
     { to: '/student', label: 'Dashboard', end: true },

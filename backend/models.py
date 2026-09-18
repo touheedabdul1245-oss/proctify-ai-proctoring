@@ -254,6 +254,10 @@ class ExamSession(Base):
     student = relationship("Student", back_populates="sessions")
     answers = relationship("Answer", back_populates="session", cascade="all, delete-orphan")
     readiness = relationship("ExamReadinessCheck", back_populates="session", uselist=False, cascade="all, delete-orphan")
+    proctoring_events = relationship("AIServiceEvent", back_populates="session", cascade="all, delete-orphan")
+    incidents = relationship("Incident", back_populates="session", cascade="all, delete-orphan")
+    risk_rows = relationship("RiskScore", back_populates="session", cascade="all, delete-orphan")
+    evidence_records = relationship("Evidence", back_populates="session", cascade="all, delete-orphan")
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -310,52 +314,102 @@ class Answer(Base):
 
 
 class AIServiceEvent(Base):
-    """Reserved for Stage 3: AI monitoring events (YOLO/MediaPipe/PnP/Audio)."""
+    """Stage 3: structured AI monitoring event for a session.
+
+    One row per *timed observation*. Sustained detections are summarized by
+    the event engine (duration + repeat_count) rather than one row per frame,
+    so this table stays compact. `payload` is a JSON snapshot of the raw
+    observation (detections, probabilities) for auditability.
+    """
     __tablename__ = "ai_events"
 
     id = Column(Integer, primary_key=True)
-    exam_session_id = Column(Integer, ForeignKey("exam_sessions.id", ondelete="CASCADE"), nullable=False)
-    source = Column(String(30), nullable=False)  # YOLO | MEDIAPIPE | PNP | AUDIO
+    exam_session_id = Column(Integer, ForeignKey("exam_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    source = Column(String(30), nullable=False)  # YOLO | MEDIAPIPE | PNP | AUDIO | ENGINE
     event_type = Column(String(50), nullable=False)
-    severity = Column(String(20), nullable=True)
+    severity = Column(String(20), nullable=True)  # INFO | WATCH | WARNING
+    confidence = Column(Float, nullable=True)
+    event_duration_seconds = Column(Float, nullable=True)  # sustained window that produced this event
+    repeat_count = Column(Integer, default=1, nullable=False)  # detections merged into this event
     payload = Column(Text, nullable=True)
     occurred_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
+    session = relationship("ExamSession", back_populates="proctoring_events")
+
 
 class Incident(Base):
-    """Reserved for Stage 3: aggregated incident derived from AI events."""
+    """Stage 3: aggregated incident graduate from sustained AI events.
+
+    Incidents are NEVER auto-verdicts: they are candidates for human review.
+    `review_status` is PENDING until a teacher/admin decides. Single detections
+    never graduate to an incident on their own.
+    """
     __tablename__ = "incidents"
 
     id = Column(Integer, primary_key=True)
-    exam_session_id = Column(Integer, ForeignKey("exam_sessions.id", ondelete="CASCADE"), nullable=False)
+    exam_session_id = Column(Integer, ForeignKey("exam_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
     incident_type = Column(String(50), nullable=False)
-    risk_level = Column(String(20), nullable=True)
+    risk_level = Column(String(20), nullable=True)  # risk state at graduation
+    confidence = Column(Float, nullable=True)
     description = Column(Text, nullable=True)
+    event_count = Column(Integer, default=1, nullable=False)
+    event_types = Column(Text, nullable=True)  # JSON list of contributing event types
+    first_event_at = Column(DateTime, nullable=True)
+    last_event_at = Column(DateTime, nullable=True)
     resolved = Column(Boolean, default=False, nullable=False)
+    review_status = Column(String(20), default="PENDING", nullable=False)  # PENDING | REVIEWED | CONFIRMED | DISMISSED
+    reviewed_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    review_notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+    session = relationship("ExamSession", back_populates="incidents")
+    evidence = relationship("Evidence", back_populates="incident")
 
 
 class RiskScore(Base):
-    """Reserved for Stage 3: temporal risk evaluation per session."""
+    """Stage 3: temporal risk state snapshot per session.
+
+    `level` (NORMAL/ATTENTION/ELEVATED/HIGH) is the source of truth used by the
+    UI. `index_value` is the internal weighted feature index that produced the
+    level. `score` is retained only as a legacy numeric field; the engine does
+    NOT treat risk as "100 minus penalty points".
+    """
     __tablename__ = "risk_scores"
 
     id = Column(Integer, primary_key=True)
-    exam_session_id = Column(Integer, ForeignKey("exam_sessions.id", ondelete="CASCADE"), nullable=False)
-    score = Column(Float, nullable=False, default=100)
+    exam_session_id = Column(Integer, ForeignKey("exam_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    level = Column(String(20), nullable=False, default="NORMAL")
+    index_value = Column(Float, nullable=True)
+    score = Column(Float, nullable=True)
     reason = Column(Text, nullable=True)
+    factors = Column(Text, nullable=True)  # JSON map of feature_weights -> contribution
     recorded_at = Column(DateTime, default=datetime.utcnow)
+
+    session = relationship("ExamSession", back_populates="risk_rows")
 
 
 class Evidence(Base):
-    """Reserved for Stage 3: captured evidence frames/clips."""
+    """Stage 3: captured evidence snapshot (image/audio) + metadata.
+
+    The binary payload lives on disk under EVIDENCE_DIR/<session_token>/;
+    this row holds the reference and capture metadata. SQL stays authoritative
+    for *what* was captured; the file is the raw artifact.
+    """
     __tablename__ = "evidence"
 
     id = Column(Integer, primary_key=True)
-    exam_session_id = Column(Integer, ForeignKey("exam_sessions.id", ondelete="CASCADE"), nullable=False)
+    exam_session_id = Column(Integer, ForeignKey("exam_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
     incident_id = Column(Integer, ForeignKey("incidents.id", ondelete="SET NULL"), nullable=True)
+    source = Column(String(30), nullable=True)  # which observation produced it
     file_path = Column(String(500), nullable=False)
-    media_type = Column(String(20), nullable=True)
+    media_type = Column(String(20), nullable=True)  # image/jpeg | audio/wav | application/json
+    description = Column(Text, nullable=True)
+    meta_json = Column("metadata", Text, nullable=True)  # JSON: bbox, confidence, context
     captured_at = Column(DateTime, default=datetime.utcnow)
+
+    session = relationship("ExamSession", back_populates="evidence_records")
+    incident = relationship("Incident", back_populates="evidence")
 
 
 class Result(Base):
