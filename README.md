@@ -4,11 +4,14 @@ An AI-assisted online examination platform: **admins** manage users, classes and
 enrollment; **teachers** author, schedule and publish exams; **students** take
 them under AI-assisted proctoring.
 
-> **Current status — Stage 1 complete & verified.** This stage builds and tests
-> the platform foundation (roles, users/classes/enrollment, exam authoring →
-> scheduling → publishing). The AI service layer (YOLO / MediaPipe / PnP / audio)
-> is integrated at the **health/readiness level only**. **Live AI proctoring is
-> NOT yet implemented** — that is Stage 2 (the student examination workflow).
+> **Current status — Stage 2 complete & verified.** Stage 1 built the platform
+> foundation (roles, users/classes/enrollment, exam authoring → scheduling →
+> publishing). Stage 2 delivers the **student examination workflow**: exam
+> session lifecycle (create → readiness wizard → start → take → autosave →
+> submit → timeout), server-side auto-grading, and the student result page.
+> The AI service layer (YOLO / MediaPipe / PnP / audio) is still integrated at
+> the **health/readiness level only** — **live AI proctoring is NOT yet
+> implemented** and is the next stage (Stage 3).
 
 ---
 
@@ -18,7 +21,7 @@ them under AI-assisted proctoring.
 |------|--------|
 | **Admin** | User management, students + bulk enrollment (CSV), classes/batches, admin dashboard with platform stats and **AI health panel**. |
 | **Teacher** | Create exams, add MCQ questions, schedule with a time window, set SCHEDULED / AVAILABLE / publish, reschedule, archive; exams list with per-exam state. |
-| **Student** | `Assigned Exams`, student dashboard, public/exams, profile. |
+| **Student** | `Assigned Exams` (start/continue/resume), pre-exam readiness wizard, timer-driven exam paper with autosave, submission, result summary, profile. |
 
 Login redirects by role: `/admin`, `/teacher`, `/student`.
 
@@ -52,11 +55,11 @@ Frontend (React 18 + Vite):
   Assign / Schedule / Preview; MCQ modal; publish).
 - Student: dashboard, Assigned Exams, profile.
 
-## Not implemented (Stages 2+)
-- Live student examination **workflow** (taking an exam).
-- Real-time AI proctoring: sending frames to YOLO/MediaPipe/PnP/audio during an
+## Not implemented (Stage 3+)
+- Real-time AI proctoring: sending frames to YOLO/MediaPipe/PnP/audio during a
   live exam, incident detection & flags, anti-cheat alerts.
-- AI-based reporting and analytics.
+- AI-based reporting and analytics, teacher live-monitoring of in-progress
+  sessions and their incident feeds.
 
 ---
 
@@ -150,14 +153,28 @@ node C:\...\browser_smoke.cjs
 
 ---
 
-## Current verification status (Stage 1)
+## Current verification status
 
+Stage 1:
 - Backend API smoke: **61/61 PASS**
 - Browser UI smoke (all three roles, full teacher flow): **21/21 PASS**
 - Exam lifecycle through real UI verified end-to-end (create → question → schedule → publish).
+
+Stage 2:
+- Backend end-to-end test (`test_stage2_backend.py`, temp SQLite DB):
+  **58/58 PASS** — session lifecycle, readiness wizard gating, paper (no answer
+  leakage), answer autosave/overwrite, heartbeat, submit + idempotent re-submit,
+  grading with negative marks, window gating, timeout auto-submit (EXPIRED), and
+  Stage 1 regression.
+- Browser end-to-end (headless Chrome, live backend + Vite): **23/23 PASS** —
+  login → My Exams → readiness wizard (identity / camera / mic / env) → start →
+  4 answers + autosave + mark-for-review → simulated network loss (offline banner
+  + recovery) → submit → result summary showing counts and SUBMITTED status.
+- `npm run build` green (59 modules).
 
 > Note: single benign console error (`404` favicon) — cosmetic, not an app bug.
 
 ---
 
-Stage 2 next: the student examination workflow + live AI proctoring pipeline.
+Stage 3 next: the live AI proctoring pipeline (real-time frame/audio analysis,
+incident detection, teacher monitoring) + AI-based reporting.

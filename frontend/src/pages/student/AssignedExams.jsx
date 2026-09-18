@@ -1,11 +1,32 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../../api'
 import { PageHeader, Card, Table, Badge, Modal, Loading, useAsync, fmtDate } from '../../components/Ui'
 
+function useSessionStates(list) {
+  const { data, loading, refresh } = useAsync(async () => {
+    const exams = list.data || []
+    const states = await Promise.all(
+      exams.map(async (e) => {
+        try {
+          const s = await api(`/student/exams/${e.exam_id}/session`)
+          return { exam_id: e.exam_id, ...s }
+        } catch {
+          return { exam_id: e.exam_id, session_token: null, status: null }
+        }
+      })
+    )
+    return Object.fromEntries(states.map((s) => [s.exam_id, s]))
+  }, [list.data])
+  return { states: data || {}, loading, refresh }
+}
+
 export default function AssignedExams() {
+  const navigate = useNavigate()
   const [filter, setFilter] = useState('')
   const list = useAsync(() => api(`/student/exams?include_unpublished=true`), [])
   const [detail, setDetail] = useState(null)
+  const session = useSessionStates(list)
 
   const cols = [
     { key: 'title', label: 'Exam' },
@@ -16,8 +37,38 @@ export default function AssignedExams() {
     { key: 'duration_minutes', label: 'Duration', render: (r) => `${r.duration_minutes} min` },
     { key: 'total_marks', label: 'Marks' },
     { key: 'question_count', label: 'Questions' },
-    { key: 'status', label: 'Status', render: (r) => <Badge status={r.status} /> },
-    { key: 'published', label: 'Published', render: (r) => (r.is_published ? <Badge status="published" /> : <Badge status="draft" />) },
+    {
+      key: 'action',
+      label: 'Action',
+      render: (r) => {
+        const st = session.states[r.exam_id] || {}
+        const open = r.is_published && ['SCHEDULED', 'AVAILABLE', 'ACTIVE'].includes(r.status)
+        let label = '—'
+        let target = null
+        if (st.status === 'ACTIVE') {
+          label = 'Resume exam'
+          target = `/student/exam/${st.session_token}`
+        } else if (st.status === 'SUBMITTED' || st.status === 'EXPIRED') {
+          label = st.status === 'EXPIRED' ? 'Expired' : 'Submitted'
+          target = `/student/result/${st.session_token}`
+        } else if (open) {
+          label = st.status === 'PREPARING' ? 'Continue' : 'Start exam'
+          target = `/student/exams/${r.exam_id}`
+        }
+        if (!target) return <span className="muted">{label}</span>
+        return (
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={(e) => {
+              e.stopPropagation()
+              navigate(target)
+            }}
+          >
+            {label}
+          </button>
+        )
+      },
+    },
   ]
 
   const rows = (list.data || []).filter((r) => !filter || r.status === filter)
@@ -40,7 +91,12 @@ export default function AssignedExams() {
         {list.loading ? (
           <Loading />
         ) : (
-          <Table columns={cols} rows={rows} onRowClick={(r) => setDetail(r)} />
+          <Table
+            columns={cols}
+            rows={rows}
+            rowKey="exam_id"
+            onRowClick={(r) => setDetail(r)}
+          />
         )}
       </Card>
 
@@ -87,6 +143,23 @@ export default function AssignedExams() {
                 </tr>
               </tbody>
             </table>
+            <div className="form-actions">
+              {detail.is_published && ['SCHEDULED', 'AVAILABLE', 'ACTIVE'].includes(detail.status) && (
+                <button
+                  className="btn btn-primary"
+                  onClick={() => {
+                    const st = session.states[detail.exam_id] || {}
+                    if (st.status === 'ACTIVE') navigate(`/student/exam/${st.session_token}`)
+                    else navigate(`/student/exams/${detail.exam_id}`)
+                  }}
+                >
+                  {session.states[detail.exam_id]?.status === 'ACTIVE' ? 'Resume exam' : 'Start exam'}
+                </button>
+              )}
+              <button className="btn btn-ghost" onClick={() => setDetail(null)}>
+                Close
+              </button>
+            </div>
           </div>
         )}
       </Modal>

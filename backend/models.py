@@ -52,6 +52,7 @@ class Student(Base):
     klass = relationship("ClassGroup", back_populates="students")
     enrollments = relationship("Enrollment", back_populates="student")
     assignments = relationship("ExamAssignment", back_populates="student")
+    sessions = relationship("ExamSession", back_populates="student")
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -165,6 +166,7 @@ class Exam(Base):
     questions = relationship("Question", back_populates="exam", cascade="all, delete-orphan", order_by="Question.order_index")
     assignments = relationship("ExamAssignment", back_populates="exam", cascade="all, delete-orphan")
     batch_assignments = relationship("ExamBatchAssignment", back_populates="exam", cascade="all, delete-orphan")
+    sessions = relationship("ExamSession", back_populates="exam")
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -187,6 +189,7 @@ class Question(Base):
     negative_marks = Column(Float, nullable=True, default=0)
 
     exam = relationship("Exam", back_populates="questions")
+    answers = relationship("Answer", back_populates="question")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -224,30 +227,86 @@ class ExamBatchAssignment(Base):
 # --------------------------------------------------------------------------
 
 class ExamSession(Base):
-    """Reserved for Stage 2: per-student exam taking session."""
+    """Stage 2: per-student live exam-taking session with autosave + timer.
+
+    Lifecycle:
+      PREPARING  -> created by the readiness wizard (identity/camera/mic/env checks)
+      ACTIVE     -> student started the exam; timer running
+      SUBMITTED  -> student submitted answers (or auto-submitted on expiry)
+      EXPIRED    -> time ran out without an explicit submit
+      ABANDONED  -> teacher/admin terminated (reserved)
+    Instances are keyed by (exam_id, student_id_db) — resumed via session_token.
+    """
     __tablename__ = "exam_sessions"
 
     id = Column(Integer, primary_key=True)
     session_token = Column(String(255), unique=True, nullable=False, index=True)
     exam_id = Column(Integer, ForeignKey("exams.id", ondelete="CASCADE"), nullable=False)
     student_id_db = Column(Integer, ForeignKey("students.id", ondelete="CASCADE"), nullable=False)
-    status = Column(String(20), nullable=False, default="SCHEDULED")
+    status = Column(String(20), nullable=False, default="PREPARING", index=True)
     start_time = Column(DateTime, nullable=True)
-    end_time = Column(DateTime, nullable=True)
+    end_time = Column(DateTime, nullable=True)          # = start_time + duration
+    last_activity_at = Column(DateTime, nullable=True)  # heartbeat / autosave
+    submitted_at = Column(DateTime, nullable=True)
+    expired_at = Column(DateTime, nullable=True)
+
+    exam = relationship("Exam", back_populates="sessions")
+    student = relationship("Student", back_populates="sessions")
+    answers = relationship("Answer", back_populates="session", cascade="all, delete-orphan")
+    readiness = relationship("ExamReadinessCheck", back_populates="session", uselist=False, cascade="all, delete-orphan")
+
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class ExamReadinessCheck(Base):
+    """Stage 2: outcome of the pre-exam readiness wizard for a session.
+
+    Recorded once per session before the timer starts: the student confirms
+    their identity, and the browser camera / microphone / environment checks
+    must have passed before the exam can be started.
+    """
+    __tablename__ = "exam_readiness_checks"
+
+    id = Column(Integer, primary_key=True)
+    exam_session_id = Column(Integer, ForeignKey("exam_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    identity_verified = Column(Boolean, default=False, nullable=False)
+    identity_photo_path = Column(String(500), nullable=True)
+    identity_confirmed_at = Column(DateTime, nullable=True)
+    camera_checked = Column(Boolean, default=False, nullable=False)
+    camera_checked_at = Column(DateTime, nullable=True)
+    camera_error = Column(String(300), nullable=True)
+    microphone_checked = Column(Boolean, default=False, nullable=False)
+    microphone_checked_at = Column(DateTime, nullable=True)
+    microphone_error = Column(String(300), nullable=True)
+    environment_ready = Column(Boolean, default=False, nullable=False)
+    environment_checked_at = Column(DateTime, nullable=True)
+    env_notes = Column(String(500), nullable=True)
+
+    session = relationship("ExamSession", back_populates="readiness")
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class Answer(Base):
-    """Reserved for Stage 2: submitted answer for a question."""
+    """Stage 2: submitted answer for a question, autosaved per session."""
     __tablename__ = "answers"
+    __table_args__ = (
+        UniqueConstraint("exam_session_id", "question_id", name="uq_answer_session_question"),
+    )
 
     id = Column(Integer, primary_key=True)
     exam_session_id = Column(Integer, ForeignKey("exam_sessions.id", ondelete="CASCADE"), nullable=False)
     question_id = Column(Integer, ForeignKey("questions.id", ondelete="CASCADE"), nullable=False)
     selected_option = Column(String(1), nullable=True)
+    marked_for_review = Column(Boolean, default=False, nullable=False)
     is_correct = Column(Boolean, nullable=True)
     marks_awarded = Column(Float, nullable=True)
-    submitted_at = Column(DateTime, default=datetime.utcnow)
+    saved_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    submitted_at = Column(DateTime, nullable=True)
+
+    session = relationship("ExamSession", back_populates="answers")
+    question = relationship("Question", back_populates="answers")
 
 
 class AIServiceEvent(Base):

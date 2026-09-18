@@ -13,6 +13,9 @@ import ExamEditor from './pages/teacher/ExamEditor'
 import StudentDashboard from './pages/student/StudentDashboard'
 import Profile from './pages/student/Profile'
 import AssignedExams from './pages/student/AssignedExams'
+import ExamIntro from './pages/student/ExamIntro'
+import ExamPaper from './pages/student/ExamPaper'
+import ExamResult from './pages/student/ExamResult'
 
 function Protected({ roles, children }) {
   const { user, loading } = useAuth()
@@ -78,6 +81,9 @@ export default function App() {
         <Route index element={<StudentDashboard />} />
         <Route path="profile" element={<Profile />} />
         <Route path="exams" element={<AssignedExams />} />
+        <Route path="exams/:id" element={<ExamIntro />} />
+        <Route path="exam/:token" element={<ExamPaper />} />
+        <Route path="result/:token" element={<ExamResult />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />

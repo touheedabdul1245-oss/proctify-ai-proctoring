@@ -324,3 +324,119 @@ class AIHealthOut(BaseModel):
     mediapipe: dict
     pnp: dict
     audio: dict
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 — exam sessions (readiness, MCQ taking, submission)
+# ---------------------------------------------------------------------------
+
+class ReadinessOut(BaseModel):
+    identity_verified: bool = False
+    identity_photo_path: Optional[str] = None
+    camera_checked: bool = False
+    camera_error: Optional[str] = None
+    microphone_checked: bool = False
+    microphone_error: Optional[str] = None
+    environment_ready: bool = False
+    env_notes: Optional[str] = None
+
+
+class SessionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    session_token: str
+    exam_id: int
+    status: str
+    start_time: Optional[datetime]
+    end_time: Optional[datetime]
+    last_activity_at: Optional[datetime]
+    submitted_at: Optional[datetime]
+    expired_at: Optional[datetime]
+    readiness: Optional[ReadinessOut] = None
+    remaining_seconds: Optional[int] = None
+
+
+class SessionStateOut(BaseModel):
+    """Aggregate used by the 'My Exams' page to decide Start / Resume / Done."""
+    session_token: Optional[str] = None
+    status: Optional[str] = None
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    remaining_seconds: Optional[int] = None
+
+
+class SessionCreateOut(BaseModel):
+    session_token: str
+    status: str
+    exam_id: int
+
+
+class ReadinessSubmit(BaseModel):
+    identity_verified: Optional[bool] = None
+    identity_photo_data: Optional[str] = None  # base64 data-URL still image
+    camera_checked: Optional[bool] = None
+    camera_error: Optional[str] = None
+    microphone_checked: Optional[bool] = None
+    microphone_error: Optional[str] = None
+    environment_ready: Optional[bool] = None
+    env_notes: Optional[str] = None
+
+
+class PaperQuestionOut(BaseModel):
+    id: int
+    order_index: int
+    question_text: str
+    marks: int
+    negative_marks: Optional[float]
+    option_a: Optional[str]
+    option_b: Optional[str]
+    option_c: Optional[str]
+    option_d: Optional[str]
+
+
+class PaperAnswerOut(BaseModel):
+    question_id: int
+    selected_option: Optional[str] = None
+    marked_for_review: bool = False
+    saved_at: Optional[datetime] = None
+
+
+class PaperOut(BaseModel):
+    session_token: str
+    status: str
+    exam_id: int
+    title: str
+    description: Optional[str] = None
+    duration_minutes: int
+    total_marks: int
+    question_count: int
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+    remaining_seconds: Optional[int] = None
+    questions: List[PaperQuestionOut] = []
+    answers: List[PaperAnswerOut] = []
+
+
+class AnswerSavePayload(BaseModel):
+    selected_option: Optional[str] = Field(default=None, pattern="^(A|B|C|D)?$")
+    marked_for_review: Optional[bool] = None
+
+
+class AnswerSaveOut(BaseModel):
+    question_id: int
+    selected_option: Optional[str] = None
+    marked_for_review: bool = False
+    saved_at: datetime
+
+
+class SubmitResponse(BaseModel):
+    session_token: str
+    status: str
+    total_questions: int
+    answered_count: int
+    marked_count: int
+    unanswered_count: int
+    submitted_at: Optional[datetime] = None
+    auto: bool = False
+    message: str = ""

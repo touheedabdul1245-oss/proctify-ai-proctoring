@@ -51,3 +51,6 @@ EXAM_TRANSITIONS = {
 }
 
 USER_ROLES = ["student", "teacher", "admin"]
+
+# Stage 2: pre-exam identity still-capture storage (metadata lives in SQL).
+SESSION_PHOTO_DIR = BASE_DIR / "datastore" / "session_photos"
