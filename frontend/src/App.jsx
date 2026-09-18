@@ -9,6 +9,7 @@ import BulkEnrollment from './pages/admin/BulkEnrollment'
 import Classes from './pages/admin/Classes'
 import TeacherDashboard from './pages/teacher/TeacherDashboard'
 import Proctoring from './pages/teacher/Proctoring'
+import Monitor from './pages/teacher/Monitor'
 import Exams from './pages/teacher/Exams'
 import ExamEditor from './pages/teacher/ExamEditor'
 import StudentDashboard from './pages/student/StudentDashboard'
@@ -70,6 +71,7 @@ export default function App() {
         <Route path="exams/new" element={<ExamEditor />} />
         <Route path="exams/:id" element={<ExamEditor />} />
         <Route path="proctoring" element={<Proctoring />} />
+        <Route path="monitor" element={<Monitor />} />
       </Route>
 
       <Route
