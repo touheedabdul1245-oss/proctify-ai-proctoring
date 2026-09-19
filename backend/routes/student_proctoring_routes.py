@@ -17,16 +17,17 @@ Guards:
 """
 import base64
 import time
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from ..ai_service.audio_interface import audio_service
 from ..ai_service.pipeline import build_observation
 from ..auth import get_current_user
 from ..database import get_db
 from ..models import ExamSession, Student, User
-from ..schemas import ProctoringIngestIn, ProctoringSignalOut
+from ..schemas import ProctoringIngestIn, ProctoringSignalOut, TrustOut
 from ..schemas_stage5 import ProctoringFeedConfigOut
 from ..services.proctoring_service import ingest_and_persist
 
@@ -34,8 +35,11 @@ router = APIRouter(prefix="/api/student/sessions", tags=["student-proctoring"])
 
 DEFAULT_POLL_SECONDS = 5
 MAX_FRAME_BYTES = 300 * 1024
+MAX_PCM_BYTES = 128 * 1024
+DEFAULT_PCM_SAMPLE_RATE = 16000
 
 _last_ingest: Dict[int, float] = {}
+_MAX_TRACKED_SESSIONS = 1024
 _LOCK = __import__("threading").Lock()
 
 
@@ -84,6 +88,56 @@ def _to_frame_array(raw: bytes):
         return None
 
 
+def _analyze_audio(observation: Dict[str, Any]) -> None:
+    """Run REAL server-side speech analysis on a client PCM chunk.
+
+    The client captures mic audio (downsampled 16 kHz Int16 mono), base64s it
+    into ``audio.pcm_data`` (with ``audio.sample_rate``) and posts it with the
+    observation. Here we decode the chunk and replace the audio context with
+    actual results from the SAME ``audio_service`` the health report exposes —
+    RMS, zero-crossing, voice-band ratio and a speech flag. ``available`` stays
+    honest: no samples, an undecodable chunk or an oversized payload means
+    audio is NOT available, and the engine emits AUDIO_UNAVAILABLE instead of
+    silently reporting a speech signal."""
+
+    audio = observation.get("audio")
+    if not isinstance(audio, dict) or not audio.get("available"):
+        observation["audio_unavailable"] = not bool(
+            isinstance(audio, dict) and audio.get("available")
+        )
+        return
+    pcm_b64 = audio.pop("pcm_data", None)
+    if not pcm_b64:
+        observation["audio"] = audio
+        observation["audio_unavailable"] = False
+        return
+    try:
+        raw = base64.b64decode(pcm_b64, validate=True)
+        if not raw:
+            raise ValueError("empty PCM chunk")
+        if len(raw) > MAX_PCM_BYTES:
+            raise ValueError("PCM chunk too large")
+        import numpy as np
+
+        sample_rate = int(audio.get("sample_rate") or DEFAULT_PCM_SAMPLE_RATE)
+        samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        result = audio_service.analyze(samples, sample_rate=sample_rate)
+    except Exception:
+        audio["available"] = False
+        observation["audio"] = audio
+        observation["audio_unavailable"] = True
+        return
+
+    audio["available"] = bool(result.get("available", True))
+    audio["speech_detected"] = bool(result.get("speech_detected", False))
+    audio["speech_probability"] = float(result.get("speech_probability", 0.0))
+    audio["rms"] = float(result.get("rms", 0.0))
+    audio["voice_band_ratio"] = float(result.get("voice_band_ratio", 0.0))
+    audio["duration_seconds"] = float(result.get("duration_seconds", 0.0))
+    observation["audio"] = audio
+    observation["audio_unavailable"] = not bool(audio["available"])
+
+
 @router.get("/{token}/proctoring/config", response_model=ProctoringFeedConfigOut)
 def proctoring_config(
     token: str,
@@ -123,6 +177,11 @@ def proctoring_ingest_student(
 
     # Per-session rate limit aligned with the documented poll cadence.
     with _LOCK:
+        if len(_last_ingest) > _MAX_TRACKED_SESSIONS:
+            cutoff = time.monotonic() - 3600.0
+            stale = [sid for sid, ts in _last_ingest.items() if ts < cutoff]
+            for sid in stale:
+                _last_ingest.pop(sid, None)
         last = _last_ingest.get(sess.id, 0.0)
         now = time.monotonic()
         if now - last < DEFAULT_POLL_SECONDS * 0.75:
@@ -134,6 +193,13 @@ def proctoring_ingest_student(
         _last_ingest[sess.id] = now
 
     observation = dict(payload.observation or {})
+
+    # Real audio path FIRST: if the client captured mic PCM, analyze it
+    # server-side (pops pcm_data, produces available/speech flags) so the
+    # SPEECH/AUDIO_UNAVAILABLE signals come from actual audio data, and so the
+    # same results feed build_observation below when a frame is attached.
+    _analyze_audio(observation)
+
     frame_bytes = None
     if observation.get("camera_available") and observation.get("frame_data_url"):
         frame_bytes = _decode_frame(observation.pop("frame_data_url"))
@@ -163,9 +229,17 @@ def proctoring_ingest_student(
         frame_bytes=frame_bytes,
     )
     db.commit()
+    trust = result.get("trust") or {}
     return ProctoringSignalOut(
         risk=result.get("risk", {}),
         runs=result.get("runs"),
         repeated=result.get("repeated"),
         incident_candidates=result.get("incident_candidates"),
+        trust=TrustOut(
+            score=float(trust.get("score", 100.0)),
+            level=trust.get("level") or "NORMAL",
+            delta=float(trust.get("delta", 0.0)),
+            source=trust.get("source") or "baseline",
+            reason=trust.get("reason") or "",
+        ),
     )

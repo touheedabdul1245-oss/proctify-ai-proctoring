@@ -77,6 +77,8 @@ export default function AssignedExams() {
         } else if (st.status === 'SUBMITTED' || st.status === 'EXPIRED') {
           label = st.status === 'EXPIRED' ? 'Expired' : 'Submitted'
           target = `/student/result/${st.session_token}`
+        } else if (st.status === 'TERMINATED') {
+          label = 'Terminated'
         } else if (open) {
           label = st.status === 'PREPARING' ? 'Continue' : 'Start exam'
           target = `/student/exams/${r.exam_id}`
@@ -104,18 +106,28 @@ export default function AssignedExams() {
       <PageHeader title="My Exams" subtitle="Exams assigned to you (directly or via your batch)" />
       <Card>
         <div style={{ maxWidth: 260, marginBottom: 10 }}>
-          <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+          <select className="input" value={filter} onChange={(e) => setFilter(e.target.value)}>
             <option value="">All statuses</option>
             <option value="DRAFT">DRAFT</option>
             <option value="SCHEDULED">SCHEDULED</option>
             <option value="AVAILABLE">AVAILABLE</option>
             <option value="ACTIVE">ACTIVE</option>
             <option value="COMPLETED">COMPLETED</option>
+            <option value="CANCELLED">CANCELLED</option>
+            <option value="TERMINATED">TERMINATED</option>
             <option value="ARCHIVED">ARCHIVED</option>
           </select>
         </div>
         {list.loading ? (
           <Loading />
+        ) : list.error ? (
+          <div className="error-state" role="alert">
+            <div className="error-state-title">Could not load your exams</div>
+            <div className="error-state-hint">{list.error?.message || 'Something went wrong'}</div>
+            <button className="btn btn-secondary btn-sm" onClick={list.refresh}>
+              Try again
+            </button>
+          </div>
         ) : (
           <Table
             columns={cols}

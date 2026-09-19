@@ -60,6 +60,7 @@ def _seed_world():
     try:
         teacher = User(
             email=f"t.stage4.{n}@test.dev",
+            username=f"t.stage4.{n}",
             password_hash=hash_password("Passw0rd!"),
             full_name="Stage-4 Teacher",
             role="teacher",
@@ -151,7 +152,7 @@ def teacher_headers():
     client = TestClient(app)
     r = client.post(
         "/api/auth/login",
-        json={"email": f"t.stage4.{COUNTER['n']}@test.dev", "password": "Passw0rd!"},
+        json={"username": f"t.stage4.{COUNTER['n']}", "password": "Passw0rd!"},
     )
     assert r.status_code == 200, r.text
     tok = r.json()["access_token"]
@@ -446,6 +447,7 @@ def test_monitor_requires_teacher(client, teacher_headers):
     try:
         stu_user = User(
             email=f"st.review.{iid}@test.dev",
+            username=f"st.review.{iid}",
             password_hash=hash_password("Passw0rd!"),
             full_name="Stage-4 Student User",
             role="student",
@@ -457,7 +459,7 @@ def test_monitor_requires_teacher(client, teacher_headers):
     finally:
         db.close()
     r = client.post("/api/auth/login",
-                    json={"email": f"st.review.{iid}@test.dev", "password": "Passw0rd!"})
+                    json={"username": f"st.review.{iid}", "password": "Passw0rd!"})
     assert r.status_code == 200, r.text
     tok = r.json()["access_token"]
     r = client.get("/api/proctoring/monitor/overview",

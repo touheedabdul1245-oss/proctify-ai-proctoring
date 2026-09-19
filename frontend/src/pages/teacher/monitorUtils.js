@@ -5,7 +5,7 @@ export const RISK_ORDER = { NORMAL: 0, LOW: 1, ATTENTION: 2, ELEVATED: 3, HIGH: 
 
 export const MONITOR_LEVELS = ['NORMAL', 'ATTENTION', 'ELEVATED', 'HIGH']
 
-export const MONITOR_STATUS_ORDER = { IDLE: 0, ACTIVE: 1, LIVE: 2 }
+export const MONITOR_STATUS_ORDER = { IDLE: 0, ACTIVE: 1, LIVE: 2, DONE: 3 }
 
 export function normalizeLevel(level) {
   const up = String(level || 'NORMAL').toUpperCase()

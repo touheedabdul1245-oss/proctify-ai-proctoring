@@ -16,7 +16,8 @@ export default function Profile() {
             <div className="stat-value" style={{ fontSize: 20 }}>
               {u.full_name}
             </div>
-            <div className="stat-label">{u.email}</div>
+            <div className="stat-label">@{u.username}</div>
+            <div className="muted" style={{ fontSize: 13 }}>{u.email}</div>
           </div>
         </div>
         <table className="table">

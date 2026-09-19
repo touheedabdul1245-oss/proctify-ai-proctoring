@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 export function PageHeader({ title, subtitle, actions }) {
   return (
@@ -65,7 +66,7 @@ export function Table({ columns, rows, rowKey = 'id', onRowClick }) {
 
 export function Modal({ open, onClose, title, children, wide }) {
   if (!open) return null
-  return (
+  return createPortal(
     <div className="modal-backdrop" onClick={onClose}>
       <div className={`modal ${wide ? 'modal-wide' : ''}`} onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
@@ -76,7 +77,8 @@ export function Modal({ open, onClose, title, children, wide }) {
         </div>
         <div className="modal-body">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 

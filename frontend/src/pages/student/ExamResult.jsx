@@ -47,6 +47,7 @@ export default function ExamResult() {
   if (!data) return <Loading />
 
   const expired = data.session_status === 'EXPIRED'
+  const terminated = data.session_status === 'TERMINATED'
   const published = Boolean(data.published)
   const monitoring = data.monitoring || {}
 
@@ -58,7 +59,14 @@ export default function ExamResult() {
         actions={<Link className="btn btn-secondary" to="/student/exams">Back to exams</Link>}
       />
 
-      {!published && (
+      {terminated && (
+        <div className="error-box" style={{ marginBottom: 14 }}>
+          This exam session was <strong>terminated by the invigilator</strong>. Your answers were preserved, but
+          no score was produced and the exam can no longer be re-opened.
+        </div>
+      )}
+
+      {!published && !terminated && (
         <div className="warn-box" style={{ marginBottom: 14 }}>
           Your result has been graded but is <strong>awaiting teacher review and release</strong>. You can
           see your submission below; the official score will appear once published.
@@ -76,7 +84,7 @@ export default function ExamResult() {
           <tbody>
             <tr>
               <td className="muted" width="160">Status</td>
-              <td>{expired ? 'EXPIRED (auto-submit)' : data.session_status || 'SUBMITTED'}</td>
+              <td>{expired ? 'EXPIRED (auto-submit)' : terminated ? 'TERMINATED' : data.session_status || 'SUBMITTED'}</td>
             </tr>
             <tr>
               <td className="muted">Submitted at</td>

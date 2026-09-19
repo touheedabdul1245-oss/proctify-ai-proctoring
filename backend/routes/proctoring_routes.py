@@ -78,4 +78,5 @@ def proctoring_ingest(payload: ProctoringIngestIn,
         runs=signal.get("runs"),
         repeated=signal.get("repeated"),
         incident_candidates=signal.get("incident_candidates"),
+        trust=signal.get("trust") or {},
     )

@@ -28,7 +28,11 @@ Incident candidate (dict) contract::
 """
 from typing import Any, Dict, List
 
-from .constants import INCIDENT_MIN_RUNS, INCIDENT_TYPE_LABELS
+from .constants import (
+    INCIDENT_BY_EVENT,
+    INCIDENT_MIN_RUNS,
+    INCIDENT_TYPE_LABELS,
+)
 from .events import EVENT_SOURCES
 
 
@@ -42,7 +46,16 @@ def _description(incident_type: str, runs: int, event_types: List[str]) -> str:
 
 
 class IncidentBuilder:
-    """Turn a set of repeated-run event families into incident candidates."""
+    """Turn a set of repeated-run event families into incident candidates.
+
+    The ``repeated`` map is keyed by EVENT FAMILY (the stream the engine
+    emits: ``OBJECT_PHONE``, ``FACE_MISSING``, ...). The configured minimum-run
+    thresholds (``INCIDENT_MIN_RUNS``) are keyed by INCIDENT TYPE (the
+    human-review surface: ``PHONE_USE``, ``FACE_ABSENT``, ...). ``build()``
+    MUST resolve each family through ``INCIDENT_BY_EVENT`` before comparing
+    against the threshold — looking the threshold up by family name directly
+    always returned 0 and silently disabled every min-run rule.
+    """
 
     def __init__(self, min_runs: Dict[str, int] = None):
         self._min = dict(min_runs or INCIDENT_MIN_RUNS)
@@ -50,27 +63,30 @@ class IncidentBuilder:
     # ------------------------------------------------------------------
     def build(self, repeated: Dict[str, int], risk_label: str,
               first_ts=None, last_ts=None) -> List[Dict[str, Any]]:
-        """``repeated`` = {family: distinct_run_count} from RepeatTracker.
+        """``repeated`` = {event_family: distinct_run_count} from RepeatTracker.
 
-        Only families that reached their INCIDENT_MIN_RUNS threshold produce a
-        candidate. ``risk_label`` is the DETECTED state at detection time —
-        stored for context, never used to auto-confirm anything.
+        Only families whose incident TYPE reached its configured threshold
+        produce a candidate. ``risk_label`` is the DETECTED state at detection
+        time — stored for context, never used to auto-confirm anything.
         """
         candidates: List[Dict[str, Any]] = []
         for family, runs in sorted(repeated.items()):
-            threshold = self._min.get(family, 0)
+            incident_type = INCIDENT_BY_EVENT.get(family, family)
+            threshold = self._min.get(
+                incident_type, self._min.get(family, 0)
+            )
             if runs < threshold:
                 continue
             event_types = [family]
             candidates.append({
-                "incident_type": family,
+                "incident_type": incident_type,
                 "risk_level": risk_label,
                 "confidence": round(min(1.0, 0.5 + 0.10 * (runs - threshold)), 4),
                 "event_count": int(runs),
                 "event_types": event_types,
                 "first_event_at": first_ts,
                 "last_event_at": last_ts,
-                "description": _description(family, runs, event_types),
+                "description": _description(incident_type, runs, event_types),
                 "review_status": "PENDING",
             })
         return candidates

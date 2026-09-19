@@ -290,6 +290,7 @@ export default function ExamIntro() {
           <table className="table" style={{ maxWidth: 560 }}>
             <tbody>
               <tr><td className="muted" width="150">Name</td><td>{profile.user?.full_name}</td></tr>
+              <tr><td className="muted">Username</td><td>@{profile.user?.username}</td></tr>
               <tr><td className="muted">Student ID</td><td>{profile.student_id || '—'}</td></tr>
               <tr><td className="muted">Email</td><td>{profile.user?.email}</td></tr>
             </tbody>

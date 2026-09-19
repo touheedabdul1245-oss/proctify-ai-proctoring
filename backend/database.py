@@ -28,6 +28,8 @@ def init_db():
     _migrate_stage2(engine)
     _migrate_stage3(engine)
     _migrate_stage5(engine)
+    _migrate_stage6(engine)
+    _migrate_username(engine)
     Base.metadata.create_all(bind=engine)
 
 
@@ -83,6 +85,94 @@ def _migrate_stage2(engine):
                         add_column("exam_sessions", "expired_at", "DATETIME")
 
         raw.commit()
+    finally:
+        raw.close()
+
+
+def _migrate_stage6(engine):
+    """Stage 6: ensure the ``trust_scores`` history table exists.
+
+    Idempotent: creates the table only if absent (SQLite ``IF NOT EXISTS``).
+    New databases get it via ``Base.metadata.create_all``; existing databases
+    that predate the TrustScore model get it here so the 0..100 score history
+    (baseline / penalty / recovery rows) can be written without a full
+    re-init. Trust stays SEPARATE from suspicion: ``risk_scores`` labels
+    suspicion, ``trust_scores`` is the numeric history SQL is authoritative
+    for.
+    """
+    from .models import TrustScore
+
+    TrustScore.__table__.create(bind=engine, checkfirst=True)
+
+
+def _migrate_username(engine):
+    """Add the ``users.username`` column and backfill unique usernames.
+
+    Usernames replace email as the login identity. Existing rows get a
+    meaningful slug derived from their email local-part (e.g.
+    ``admin@proctify.dev`` -> ``admin``); collisions get a numeric suffix.
+    A UNIQUE INDEX is created for fresh databases by ``create_all`` and for
+    existing databases here (SQLite cannot ADD a UNIQUE constraint via
+    ALTER, so a UNIQUE INDEX carries the same semantics).
+    """
+    if not engine.dialect.name == "sqlite":
+        return
+    raw = engine.raw_connection()
+    try:
+        cur = raw.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+        if not cur.fetchone():
+            return
+        cur.execute("PRAGMA table_info(users)")
+        cols = {r[1] for r in cur.fetchall()}
+        altered = False
+        if "username" not in cols:
+            cur.execute("ALTER TABLE users ADD COLUMN username VARCHAR(100)")
+            altered = True
+        cur.execute("SELECT COUNT(*) FROM users WHERE username IS NULL OR TRIM(username) = ''")
+        empty = cur.fetchone()[0] > 0
+        raw.commit()
+    finally:
+        raw.close()
+
+    if not (altered or empty):
+        return
+
+    from .models import User
+    from .usernames import slugify_email
+
+    db = SessionLocal()
+    try:
+        used = {row[0].lower() for row in db.query(User.username).all() if row[0]}
+        rows = (
+            db.query(User)
+            .filter((User.username.is_(None)) | (User.username == ""))
+            .order_by(User.id)
+            .all()
+        )
+        for user in rows:
+            base = slugify_email(user.email)
+            candidate = base
+            i = 2
+            while candidate.lower() in used:
+                candidate = f"{base}{i}"
+                i += 1
+            user.username = candidate
+            used.add(candidate.lower())
+        if rows:
+            db.commit()
+    finally:
+        db.close()
+
+    raw = engine.raw_connection()
+    try:
+        cur = raw.cursor()
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='ix_users_username'"
+        )
+        if not cur.fetchone():
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_users_username ON users (username)")
+            raw.commit()
     finally:
         raw.close()
 

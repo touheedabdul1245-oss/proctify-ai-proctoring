@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from ..audit import audit
 from ..auth import get_current_user, require_admin, require_teacher
 from ..database import get_db
+from ..proctoring.constants import TRUST_BASE_SCORE, trust_level_for
 from ..models import (
     AIServiceEvent,
     Evidence,
@@ -31,6 +32,7 @@ from ..models import (
     Question,
     Result,
     Student,
+    TrustScore,
     User,
 )
 from ..schemas_stage5 import (
@@ -97,9 +99,22 @@ def _monitoring_summary(db: Session, sess: Optional[ExamSession]) -> MonitoringS
     if sess.risk_rows:
         latest = max(sess.risk_rows, key=lambda x: x.recorded_at or x.id)
     incidents = sess.incidents or []
+
+    trust_score = TRUST_BASE_SCORE
+    trust_level = "NORMAL"
+    trust_delta = 0.0
+    if sess.trust_rows:
+        last_trust = max(sess.trust_rows, key=lambda r: r.id)
+        trust_score = float(last_trust.trust_score or TRUST_BASE_SCORE)
+        trust_delta = float(last_trust.delta or 0.0)
+        trust_level = (last_trust.risk_level or trust_level_for(trust_score)).upper()
+
     return MonitoringSummaryOut(
         risk_level=(latest.level if latest else "NORMAL").upper(),
         risk_index=float(latest.index_value or latest.score or 0.0) if latest else 0.0,
+        trust_score=round(trust_score, 2),
+        trust_level=trust_level,
+        trust_delta=round(trust_delta, 2),
         event_count=len(sess.proctoring_events or []),
         pending_incidents=sum(1 for i in incidents if (i.review_status or "PENDING") == "PENDING"),
         confirmed_incidents=sum(1 for i in incidents if (i.review_status or "") == "CONFIRMED"),

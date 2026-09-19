@@ -1,12 +1,20 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, errorMessage } from '../../api'
-import { Loading, ErrorBox, Badge, fmtDate } from '../../components/Ui'
+import { Loading, ErrorBox, Badge } from '../../components/Ui'
 import DetailsTab from './tabs/DetailsTab'
 import QuestionsTab from './tabs/QuestionsTab'
 import AssignTab from './tabs/AssignTab'
 import ScheduleTab from './tabs/ScheduleTab'
 import PreviewTab from './tabs/PreviewTab'
+
+const STEPS = [
+  { key: 'details', label: 'Details' },
+  { key: 'questions', label: 'Questions' },
+  { key: 'assign', label: 'Assign' },
+  { key: 'schedule', label: 'Schedule & Publish' },
+  { key: 'preview', label: 'Preview' },
+]
 
 export default function ExamEditor() {
   const { id } = useParams()
@@ -32,7 +40,6 @@ export default function ExamEditor() {
       .finally(() => setLoading(false))
   }
 
-  // initial load once examId known
   useEffect(() => {
     if (examId) load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -74,13 +81,16 @@ export default function ExamEditor() {
     return <Loading />
   }
 
-  const tabs = [
-    { key: 'details', label: 'Details' },
-    { key: 'questions', label: 'Questions' },
-    { key: 'assign', label: 'Assign' },
-    { key: 'schedule', label: 'Schedule & Publish' },
-    { key: 'preview', label: 'Preview' },
-  ]
+  const activeIndex = STEPS.findIndex((s) => s.key === tab)
+  const current = activeIndex < 0 ? 0 : activeIndex
+  const locked = !examId
+
+  function stepClass(idx) {
+    if (locked) return idx === 0 ? 'active' : 'locked'
+    if (idx === current) return 'active'
+    if (idx < current) return 'done'
+    return 'pending'
+  }
 
   return (
     <div>
@@ -95,7 +105,7 @@ export default function ExamEditor() {
                 {exam.total_marks} marks
               </>
             ) : (
-              'Fill details, add questions, assign students, schedule, then publish.'
+              'Create the exam details first, then add questions, assign students, schedule and publish.'
             )}
           </p>
         </div>
@@ -106,25 +116,59 @@ export default function ExamEditor() {
         </div>
       </div>
 
+      <div className="stepper" role="tablist" aria-label="Exam setup steps">
+        {STEPS.map((s, i) => (
+          <div
+            key={s.key}
+            role="tab"
+            aria-selected={i === current}
+            aria-disabled={locked && i !== 0}
+            className={`step ${stepClass(i)} ${locked && i !== 0 ? 'locked' : ''}`}
+            onClick={!locked || i === 0 ? () => setTab(s.key) : undefined}
+          >
+            <span className="step-dot">{i < current && !locked ? '✓' : i + 1}</span>
+            <span className="step-label">
+              <span className="step-num">Step {i + 1}</span>
+              {s.label}
+            </span>
+            {i < STEPS.length - 1 && <span className="step-line" />}
+          </div>
+        ))}
+      </div>
+
       {actionError && <ErrorBox error={actionError} />}
 
       {examId ? (
         <>
-          <div className="tabs">
-            {tabs.map((t) => (
-              <button key={t.key} className={'tab' + (tab === t.key ? ' active' : '')} onClick={() => setTab(t.key)}>
-                {t.label}
-              </button>
-            ))}
-          </div>
           {exam && tab === 'details' && <DetailsTab exam={exam} onSaved={load} onCreated={afterCreate} />}
           {exam && tab === 'questions' && <QuestionsTab exam={exam} onChanged={load} />}
           {exam && tab === 'assign' && <AssignTab exam={exam} onChanged={load} />}
-          {exam && tab === 'schedule' && <ScheduleTab exam={exam} onChanged={load} act={act} />}
+          {exam && tab === 'schedule' && <ScheduleTab exam={exam} onChanged={load} />}
           {exam && tab === 'preview' && <PreviewTab exam={exam} />}
+          {exam && (
+            <div className="stepper-nav">
+              <button className="btn btn-ghost" disabled={current === 0} onClick={() => setTab(STEPS[current - 1].key)}>
+                ← Back
+              </button>
+              {current < STEPS.length - 1 ? (
+                <button className="btn btn-primary" onClick={() => setTab(STEPS[current + 1].key)}>
+                  Next: {STEPS[current + 1].label} →
+                </button>
+              ) : (
+                <button className="btn btn-ghost" onClick={() => navigate('/teacher/exams')}>
+                  Done
+                </button>
+              )}
+            </div>
+          )}
         </>
       ) : (
-        <DetailsTab onCreated={afterCreate} />
+        <>
+          <DetailsTab onCreated={afterCreate} />
+          <div className="stepper-nav">
+            <p className="muted">Create the exam to unlock the remaining steps.</p>
+          </div>
+        </>
       )}
     </div>
   )

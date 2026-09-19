@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from ..config import MAX_BULK_ROWS
 from ..models import BulkImport, BulkImportRow, ClassGroup, Enrollment, Exam, Student, User
+from ..usernames import slugify_email, unique_username
 
 ID_COLUMNS = ["student_id", "student id", "id", "reg_no", "reg no", "roll_no", "roll no"]
 NAME_COLUMNS = ["name", "full_name", "full name", "student name", "student_name"]
@@ -205,6 +206,7 @@ def confirm_import(db: Session, import_id: int, created_by_user_id: int = None) 
 
             user = User(
                 email=r.email,
+                username=unique_username(db, slugify_email(r.email)),
                 password_hash=hash_password(DEFAULT_STUDENT_PASSWORD),
                 full_name=r.full_name,
                 role="student",

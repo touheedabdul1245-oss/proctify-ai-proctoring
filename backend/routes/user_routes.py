@@ -25,6 +25,7 @@ from ..services.enrollment_service import (
     parse_upload,
     stage_preview,
 )
+from ..usernames import slugify_email, unique_username
 
 router = APIRouter(prefix="/api", tags=["users"])
 
@@ -40,6 +41,7 @@ def _student_to_out(db: Session, s: Student) -> StudentOut:
         user_id=s.user_id,
         student_id=s.student_id,
         email=s.email,
+        username=s.user.username if s.user else None,
         full_name=s.full_name,
         class_id=s.class_id,
         class_code=klass.code if klass else None,
@@ -80,7 +82,7 @@ def list_users(
         query = query.filter(User.role == role)
     if q:
         like = f"%{q}%"
-        query = query.filter(or_(User.email.ilike(like), User.full_name.ilike(like)))
+        query = query.filter(or_(User.email.ilike(like), User.full_name.ilike(like), User.username.ilike(like)))
     users = query.order_by(User.created_at.desc()).all()
     return [_user_to_detail(u, db) for u in users]
 
@@ -95,6 +97,13 @@ def create_user(
     if db.query(User).filter(User.email == email).first():
         raise HTTPException(status_code=409, detail="Email already registered")
 
+    if payload.username:
+        username = payload.username.strip().lower()
+        if db.query(User).filter(User.username == username).first():
+            raise HTTPException(status_code=409, detail="Username already taken")
+    else:
+        username = unique_username(db, slugify_email(email))
+
     if payload.role == "student":
         if not payload.student_id:
             raise HTTPException(status_code=422, detail="student_id is required for students")
@@ -108,6 +117,7 @@ def create_user(
 
     user = User(
         email=email,
+        username=username,
         password_hash=hash_password(payload.password or DEFAULT_STUDENT_PASSWORD),
         full_name=payload.full_name.strip(),
         role=payload.role,
@@ -161,6 +171,12 @@ def update_user(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    if payload.username and payload.username.strip().lower() != user.username:
+        new_username = payload.username.strip().lower()
+        if db.query(User).filter(User.username == new_username).first():
+            raise HTTPException(status_code=409, detail="Username already taken")
+        user.username = new_username
 
     if payload.email and payload.email.lower() != user.email:
         if db.query(User).filter(User.email == payload.email.lower()).first():
@@ -258,6 +274,13 @@ def create_student(
     if db.query(Student).filter(Student.student_id == payload.student_id.strip()).first():
         raise HTTPException(status_code=409, detail="Student ID already exists")
 
+    if payload.username:
+        username = payload.username.strip().lower()
+        if db.query(User).filter(User.username == username).first():
+            raise HTTPException(status_code=409, detail="Username already taken")
+    else:
+        username = unique_username(db, slugify_email(email))
+
     klass = None
     if payload.class_code:
         klass = db.query(ClassGroup).filter(ClassGroup.code == payload.class_code.strip()).first()
@@ -266,6 +289,7 @@ def create_student(
 
     user = User(
         email=email,
+        username=username,
         password_hash=hash_password(payload.password or DEFAULT_STUDENT_PASSWORD),
         full_name=payload.full_name.strip(),
         role="student",

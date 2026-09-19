@@ -3,13 +3,15 @@ from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
 
+from .usernames import USERNAME_RE
+
 
 # ---------------------------------------------------------------------------
 # Auth
 # ---------------------------------------------------------------------------
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    username: str = Field(min_length=1, max_length=64)
     password: str
 
 
@@ -33,6 +35,7 @@ class UserCreate(BaseModel):
     password: str = Field(min_length=6)
     full_name: str
     role: str = Field(pattern="^(student|teacher|admin)$")
+    username: Optional[str] = Field(default=None, pattern=USERNAME_RE)
 
     # extra for student/teacher profiles
     student_id: Optional[str] = None
@@ -41,6 +44,7 @@ class UserCreate(BaseModel):
 
 
 class UserUpdate(BaseModel):
+    username: Optional[str] = Field(default=None, pattern=USERNAME_RE)
     full_name: Optional[str] = None
     email: Optional[EmailStr] = None
     is_active: Optional[bool] = None
@@ -53,6 +57,7 @@ class UserOut(BaseModel):
 
     id: int
     email: str
+    username: Optional[str] = None
     full_name: str
     role: str
     is_active: bool
@@ -73,6 +78,7 @@ class UserDetail(UserOut):
 
 class StudentCreate(BaseModel):
     student_id: str
+    username: Optional[str] = Field(default=None, pattern=USERNAME_RE)
     email: EmailStr
     full_name: str
     password: Optional[str] = Field(default=None, min_length=6)
@@ -94,6 +100,7 @@ class StudentOut(BaseModel):
     user_id: int
     student_id: str
     email: str
+    username: Optional[str] = None
     full_name: str
     class_id: Optional[int] = None
     class_code: Optional[str] = None
@@ -254,7 +261,7 @@ class ExamSchedulePayload(BaseModel):
 
 
 class ExamStatusChange(BaseModel):
-    target_status: str = Field(pattern="^(DRAFT|SCHEDULED|AVAILABLE|ACTIVE|COMPLETED|ARCHIVED)$")
+    target_status: str = Field(pattern="^(DRAFT|SCHEDULED|AVAILABLE|ACTIVE|COMPLETED|CANCELLED|TERMINATED|ARCHIVED)$")
 
 
 class ExamOut(BaseModel):
@@ -283,6 +290,7 @@ class ExamDetail(ExamOut):
     questions: List[QuestionOut] = []
     assigned_students: List[StudentOut] = []
     assigned_batches: List[ClassOut] = []
+    assignment_summary: Optional[dict] = None
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +474,22 @@ class ProctoringIngestIn(BaseModel):
     audio_available: bool = True
 
 
+class TrustOut(BaseModel):
+    """Stage-6 numeric trust snapshot (0..100) returned with each signal.
+
+    ``score`` is the current live 0..100 value, ``level`` its band
+    (NORMAL/ATTENTION/ELEVATED/HIGH per TRUST_SCORE_RANGES), ``delta`` the
+    change since the previous ingest (negative = penalty, positive =
+    recovery), and ``source``/``reason`` explain where it came from.
+    """
+
+    score: float = 100.0
+    level: str = "NORMAL"
+    delta: float = 0.0
+    source: str = "baseline"
+    reason: str = ""
+
+
 class ProctoringSignalOut(BaseModel):
     """Compact, deterministic signal dict returned per ingest (the engine's
     snapshot contract). Incidents are ALWAYS PENDING for human review; risk
@@ -475,6 +499,64 @@ class ProctoringSignalOut(BaseModel):
     runs: Optional[Dict[str, int]] = None
     repeated: Optional[Dict[str, int]] = None
     incident_candidates: Optional[List[Dict[str, Any]]] = None
+    trust: TrustOut = TrustOut()
+
+
+# ---------------------------------------------------------------------------
+# Teacher live-student list (SQL-authoritative, powers the dashboard table)
+# ---------------------------------------------------------------------------
+
+class LiveStudentRow(BaseModel):
+    """One assigned (student, exam) row for the teacher dashboard's live list.
+
+    ``status`` is the session status the student is in for that exam
+    (NOT_STARTED / PREPARING / IN_PROGRESS / SUBMITTED / EXPIRED / TERMINATED),
+    NOT a verdict. ``monitor_status`` is LIVE only while a session is actively
+    streaming AI signals for a still-ACTIVE exam/session. Trust, risk, camera,
+    mic and incidents are read from SQL only — never computed in the browser.
+    """
+
+    exam_id: int
+    exam_code: str
+    exam_title: str
+    exam_status: str
+    student_db_id: int
+    student_id: str
+    student_name: str
+    student_email: str
+    status: str
+    monitor_status: str
+    session_id: Optional[int] = None
+    session_token: Optional[str] = None
+    session_started_at: Optional[datetime] = None
+    session_ends_at: Optional[datetime] = None
+    trust_score: Optional[float] = None
+    trust_level: str = "NORMAL"
+    risk_level: str = "NORMAL"
+    risk_index: Optional[float] = None
+    camera: bool = False
+    microphone: bool = False
+    pending_incidents: int = 0
+    incident_count: int = 0
+    evidence_count: int = 0
+    event_count_24h: int = 0
+    last_activity_at: Optional[datetime] = None
+    latest_event: Optional[str] = None
+
+
+class LiveStudentsOut(BaseModel):
+    exams: int = 0
+    students: int = 0
+    live_count: int = 0
+    in_progress_count: int = 0
+    preparing_count: int = 0
+    not_started_count: int = 0
+    submitted_count: int = 0
+    expired_count: int = 0
+    terminated_count: int = 0
+    elevated_risk: int = 0
+    pending_incidents: int = 0
+    rows: List[LiveStudentRow] = []
 
 
 class ProctoringBandsOut(BaseModel):

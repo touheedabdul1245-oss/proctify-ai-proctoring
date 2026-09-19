@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 
 from ..auth import create_access_token, get_current_user, hash_password, verify_password
 from ..database import get_db
@@ -19,9 +20,10 @@ def _token_response(user: User) -> TokenResponse:
 
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == payload.email.lower().strip()).first()
+    identifier = payload.username.strip().lower()
+    user = db.query(User).filter(or_(User.username == identifier, User.email == identifier)).first()
     if not user or not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated")
     return _token_response(user)
@@ -29,9 +31,10 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
 
 @router.post("/login/form", response_model=TokenResponse, include_in_schema=False)
 def login_form(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == form.username.lower().strip()).first()
+    identifier = form.username.strip().lower()
+    user = db.query(User).filter(or_(User.username == identifier, User.email == identifier)).first()
     if not user or not verify_password(form.password, user.password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated")
     return _token_response(user)

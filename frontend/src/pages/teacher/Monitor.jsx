@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../../api'
-import { PageHeader, Card, Badge, Loading, ErrorBox, Field, fmtDate } from '../../components/Ui'
+import { PageHeader, Card, Badge, ErrorBox, Field, fmtDate, StatCard, Loading } from '../../components/Ui'
+import AnimatedCounter from '../../components/AnimatedCounter'
+import TrustGauge from '../../components/TrustGauge'
+import { RiskPill, StatusPill } from '../../components/Status'
 import {
   filterMonitorRows,
   summarize,
-  riskClass,
-  monitorStatusClass,
   reviewStatusClass,
   REVIEW_ACTIONS,
   formatIndex,
@@ -17,7 +18,7 @@ import {
 
 const POLL_MS = 5000
 const RISK_FILTERS = ['ALL', 'NORMAL', 'ATTENTION', 'ELEVATED', 'HIGH']
-const STATUS_FILTERS = ['ALL', 'LIVE', 'ACTIVE', 'IDLE']
+const STATUS_FILTERS = ['ALL', 'LIVE', 'ACTIVE', 'IDLE', 'DONE']
 
 function usePolling(fn, deps = [], interval = POLL_MS) {
   const [state, setState] = useState({ data: null, loading: true, error: null })
@@ -39,15 +40,6 @@ function usePolling(fn, deps = [], interval = POLL_MS) {
     return () => clearInterval(t)
   }, [run, interval])
   return { ...state, refresh: () => run(true) }
-}
-
-function RiskPill({ level }) {
-  return <span className={riskClass(level)}>{normalizeLevel(level)}</span>
-}
-
-function normalizeLevel(level) {
-  const lv = String(level || 'NORMAL').toUpperCase()
-  return lv === 'LOW' ? 'NORMAL' : lv
 }
 
 function EvidenceThumb({ ev }) {
@@ -86,7 +78,7 @@ function IncidentReview({ incident, onReview }) {
     <div className="incident-card">
       <div className="incident-head">
         <span className="incident-type">{incident.incident_type}</span>
-        <RiskPill level={incident.risk_level} />
+        <RiskPill level={incident.risk_level} compact />
         <span className={reviewStatusClass(incident.review_status)}>{incident.review_status}</span>
         {incident.resolved ? <Badge status="completed" /> : !!pending && <Badge status="pending" />}
       </div>
@@ -178,6 +170,35 @@ function RiskHistory({ riskRows }) {
   )
 }
 
+function TrustHistory({ trustRows }) {
+  const rows = Array.isArray(trustRows) ? trustRows : []
+  if (!rows.length) return <div className="empty">No trust snapshots yet.</div>
+  const sorted = [...rows]
+    .sort((a, b) => {
+      const ta = a.recorded_at ? new Date(a.recorded_at).getTime() : 0
+      const tb = b.recorded_at ? new Date(b.recorded_at).getTime() : 0
+      return ta - tb
+    })
+    .slice(-24)
+  return (
+    <div>
+      <div className="risk-bars">
+        {sorted.map((t, i) => (
+          <div key={i} className="risk-bar" title={`${Math.round(Number(t.trust_score) || 0)} · ${t.recorded_at ? timeAgo(t.recorded_at) : ''}`}>
+            <div
+              className={`risk-bar-fill ${Number(t.trust_score) >= 80 ? 'fill-low' : Number(t.trust_score) >= 60 ? 'fill-attention' : 'fill-high'}`}
+              style={{ height: `${(((Number(t.trust_score) || 0)) / 100) * 100}%` }}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="risk-bars-legend muted">
+        <span className="risk-bars-legend-item">Snapshot timeline · rows {sorted.length} · newest right</span>
+      </div>
+    </div>
+  )
+}
+
 function SessionDetail({ detail, onReview }) {
   if (!detail) return null
   return (
@@ -192,19 +213,47 @@ function SessionDetail({ detail, onReview }) {
         </div>
         <div className="detail-hero-right">
           <RiskPill level={detail.risk_level} />
-          <span className={monitorStatusClass(detail.monitor_status)}>{detail.monitor_status}</span>
+          <StatusPill status={detail.monitor_status} />
           <Badge status={detail.status} />
         </div>
       </div>
-      <div className="detail-stats">
-        <div className="stat-chips">
-          <span className="chip">Risk index <strong>{formatIndex(detail.risk_index)}</strong></span>
-          <span className="chip">Pending <strong>{detail.pending_incidents}</strong></span>
-          <span className="chip">Incidents <strong>{detail.incidents?.length || 0}</strong></span>
-          <span className="chip">Evidence <strong>{detail.evidence?.length || 0}</strong></span>
-          <span className="chip">Cam <strong>{detail.camera_available ? 'ON' : 'OFF'}</strong></span>
-          <span className="chip">Mic <strong>{detail.audio_available ? 'ON' : 'OFF'}</strong></span>
-          <span className="chip">Active <strong>{detail.last_activity_at ? timeAgo(detail.last_activity_at) : '—'}</strong></span>
+
+      <div className="trust-ribbon">
+        <TrustGauge
+          score={detail.trust_score}
+          level={detail.trust_level}
+          source="SQL trust_scores"
+          size={116}
+        />
+        <div className="trust-ribbon-stats">
+          <div className="trust-ribbon-stat">
+            <strong>{formatIndex(detail.risk_index)}</strong>
+            <span>Risk index</span>
+          </div>
+          <div className="trust-ribbon-stat">
+            <strong>{detail.pending_incidents ?? 0}</strong>
+            <span>Pending reviews</span>
+          </div>
+          <div className="trust-ribbon-stat">
+            <strong>{detail.incidents?.length || 0}</strong>
+            <span>Incidents</span>
+          </div>
+          <div className="trust-ribbon-stat">
+            <strong>{detail.evidence?.length || 0}</strong>
+            <span>Evidence items</span>
+          </div>
+          <div className="trust-ribbon-stat">
+            <strong>{detail.camera_available ? 'ON' : 'OFF'}</strong>
+            <span>Camera</span>
+          </div>
+          <div className="trust-ribbon-stat">
+            <strong>{detail.audio_available ? 'ON' : 'OFF'}</strong>
+            <span>Microphone</span>
+          </div>
+          <div className="trust-ribbon-stat">
+            <strong>{detail.last_activity_at ? timeAgo(detail.last_activity_at) : '—'}</strong>
+            <span>Last activity</span>
+          </div>
         </div>
       </div>
 
@@ -212,6 +261,12 @@ function SessionDetail({ detail, onReview }) {
         <Card title={`Risk history (${detail.risk_rows?.length || 0})`}>
           <RiskHistory riskRows={detail.risk_rows} />
         </Card>
+        <Card title={`Trust history (${detail.trust_rows?.length || 0})`}>
+          <TrustHistory trustRows={detail.trust_rows} />
+        </Card>
+      </div>
+
+      <div className="detail-grid">
         <Card title={`Recent AI events (${detail.events?.length || 0})`}>
           {detail.events?.length ? (
             <table className="table">
@@ -312,22 +367,20 @@ export default function Monitor() {
           <Card className="mon-stats">
             <div className="stats-grid">
               <div className="stat-card">
-                <div className="stat-value">{stats.total}</div>
+                <div className="stat-value"><AnimatedCounter value={stats.total} /></div>
                 <div className="stat-label">Active sessions</div>
               </div>
               <div className="stat-card">
-                <div className="stat-value">{stats.live}</div>
+                <div className="stat-value accent-ok"><AnimatedCounter value={stats.live} /></div>
                 <div className="stat-label">Live signals</div>
               </div>
               <div className="stat-card">
-                <div className="stat-value">{stats.pending}</div>
+                <div className="stat-value accent-warn"><AnimatedCounter value={stats.pending} /></div>
                 <div className="stat-label">Pending reviews</div>
               </div>
               {(['ATTENTION', 'ELEVATED', 'HIGH']).map((lv) => (
                 <div key={lv} className="stat-card">
-                  <div className="stat-value">
-                    <span className={riskClass(lv)}>{stats.byRisk[lv] ?? 0}</span>
-                  </div>
+                  <div className="stat-value"><span className={lv === 'HIGH' ? 'accent-danger' : lv === 'ELEVATED' ? 'accent-warn' : 'accent-brand'}>{stats.byRisk[lv] ?? 0}</span></div>
                   <div className="stat-label">{lv} students</div>
                 </div>
               ))}
@@ -362,12 +415,15 @@ export default function Monitor() {
                   <button key={r.id} className="mon-card" onClick={() => setSelectedId(r.id)}>
                     <div className="mon-card-top">
                       <span className="mon-name">{r.student_name}</span>
-                      <span className={monitorStatusClass(r.monitor_status)}>{r.monitor_status}</span>
+                      <StatusPill status={r.monitor_status} />
                     </div>
                     <div className="mon-card-sub muted">{r.student_email}</div>
                     <div className="mon-card-mid">
-                      <RiskPill level={r.risk_level} />
-                      <span className="mon-index muted">idx {formatIndex(r.risk_index)}</span>
+                      <TrustGauge size={56} score={r.trust_score} level={r.trust_level} delta={r.trust_delta} showLabel={false} />
+                      <div>
+                        <RiskPill level={r.risk_level} compact />
+                        <div className="mon-index muted" style={{ marginTop: 4 }}>idx {formatIndex(r.risk_index)}</div>
+                      </div>
                     </div>
                     <div className="mon-card-exam muted">
                       {r.exam_code} · {shortToken(r.session_token)}

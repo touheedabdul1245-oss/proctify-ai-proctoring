@@ -26,14 +26,20 @@ from ..auth import require_teacher
 from ..database import get_db
 from ..models import (
     Exam,
+    ExamAssignment,
+    ExamBatchAssignment,
     ExamReadinessCheck,
     ExamSession,
     Incident,
     RiskScore,
     Student,
+    Teacher,
+    TrustScore,
 )
 from ..proctoring import bands_contract
-from ..schemas import ProctoringIngestIn, ProctoringSignalOut
+from ..proctoring.constants import TRUST_BASE_SCORE, trust_level_for
+from ..schemas import LiveStudentRow, LiveStudentsOut, ProctoringIngestIn, ProctoringSignalOut
+from ..services.exam_state import reconcile_exam
 from ..schemas_stage4 import (
     ProctoringMonitorDetail,
     ProctoringMonitorEvidenceCard,
@@ -41,6 +47,7 @@ from ..schemas_stage4 import (
     ProctoringMonitorRiskRow,
     ProctoringMonitorSessionRow,
     ProctoringMonitorSummary,
+    ProctoringMonitorTrustRow,
     ProctoringReviewIn,
     ProctoringReviewOut,
 )
@@ -81,6 +88,25 @@ def _latest_risk(session: ExamSession) -> Optional[RiskScore]:
     if not rows:
         return None
     return max(rows, key=lambda r: r.recorded_at or r.id)
+
+
+def _latest_trust(session: ExamSession) -> Optional[TrustScore]:
+    rows = session.trust_rows or []
+    if not rows:
+        return None
+    return max(rows, key=lambda r: r.id)
+
+
+def _trust_snapshot(session: ExamSession):
+    """(score, level, delta) for a session's LIVE trust value.
+
+    SQL (trust_scores) is the source of truth: the newest row wins. Sessions
+    with no row yet are at the legal baseline (100 / NORMAL)."""
+    last = _latest_trust(session)
+    if last is None:
+        return TRUST_BASE_SCORE, "NORMAL", 0.0
+    score = float(last.trust_score or TRUST_BASE_SCORE)
+    return score, (last.risk_level or trust_level_for(score)).upper(), float(last.delta or 0.0)
 
 
 def _risk_level(session: ExamSession) -> str:
@@ -167,9 +193,10 @@ def _row_from_session(s: ExamSession) -> ProctoringMonitorSessionRow:
     evidence = s.evidence_records or []
     camera = False
     audio = False
-    for rc in s.readiness or []:
-        camera = camera or bool(rc.camera_checked)
-        audio = audio or bool(rc.microphone_checked)
+    rc = s.readiness
+    if rc is not None:
+        camera = bool(rc.camera_checked)
+        audio = bool(rc.microphone_checked)
     last_ev = _latest_risk(s)
     last_time = None
     if last_ev is not None:
@@ -185,6 +212,7 @@ def _row_from_session(s: ExamSession) -> ProctoringMonitorSessionRow:
     if recent:
         recent_types = sorted({str(e.event_type) for e in recent if e.event_type})
     active = recent_types is not None and len(recent) > 0
+    trust_score, trust_level, trust_delta = _trust_snapshot(s)
     return ProctoringMonitorSessionRow(
         id=s.id,
         exam_session_id=s.id,
@@ -218,12 +246,193 @@ def _row_from_session(s: ExamSession) -> ProctoringMonitorSessionRow:
         audio_available=audio,
         monitor_status="LIVE" if active else ("ACTIVE" if events else "IDLE"),
         last_activity_at=last_time,
+        trust_score=round(trust_score, 2),
+        trust_level=trust_level,
+        trust_delta=round(trust_delta, 2),
     )
 
 
 # ---------------------------------------------------------------------------
 # read surfaces (SQL-authoritative)
 # ---------------------------------------------------------------------------
+
+
+def _assigned_ids_for_exams(db: Session, exam_ids: list[int]) -> dict[int, set[int]]:
+    """Direct + batch-resolved student set per exam (SQL is the truth)."""
+    out: dict[int, set[int]] = {eid: set() for eid in exam_ids}
+    if not exam_ids:
+        return out
+    for (eid, sid) in db.query(ExamAssignment.exam_id, ExamAssignment.student_id_db).filter(
+        ExamAssignment.exam_id.in_(exam_ids)
+    ).all():
+        out.setdefault(eid, set()).add(sid)
+    for (eid, cid) in db.query(ExamBatchAssignment.exam_id, ExamBatchAssignment.class_id).filter(
+        ExamBatchAssignment.exam_id.in_(exam_ids)
+    ).all():
+        for (sid,) in db.query(Student.id).filter(Student.class_id == cid).all():
+            out.setdefault(eid, set()).add(sid)
+    return out
+
+
+@router.get("/live-students", response_model=LiveStudentsOut)
+def live_students(
+    current_user: Any = Depends(require_teacher),
+    db: Session = Depends(get_db),
+):
+    """Assigned-student live list for the teacher dashboard.
+
+    One row per (assigned student, exam) so the teacher sees every student
+    who may take each of their exams — not just students who already created a
+    session. Statuses are read from SQL: NOT_STARTED / PREPARING / IN_PROGRESS
+    (ACTIVE session) / SUBMITTED / EXPIRED / TERMINATED. ``monitor_status`` is
+    LIVE only when a session is ACTIVE **and** the exam is still ACTIVE for it
+    and AI events are being streamed — a non-ACTIVE session is never LIVE."""
+    exam_query = db.query(Exam)
+    if current_user.role == "teacher":
+        teacher = db.query(Teacher).filter(Teacher.user_id == current_user.id).first()
+        if not teacher:
+            raise HTTPException(status_code=403, detail="Teacher profile required")
+        exam_query = exam_query.filter(Exam.teacher_id == teacher.id)
+    exams = exam_query.order_by(Exam.scheduled_start.desc()).all()
+    for e in exams:
+        reconcile_exam(db, e)
+
+    ids_by_exam = _assigned_ids_for_exams(db, [e.id for e in exams])
+    student_ids = {sid for ids in ids_by_exam.values() for sid in ids}
+    students = {s.id: s for s in db.query(Student).filter(Student.id.in_(student_ids)).all()} if student_ids else {}
+
+    session_map: dict[tuple[int, int], ExamSession] = {}
+    if student_ids:
+        sessions = (
+            db.query(ExamSession)
+            .filter(ExamSession.exam_id.in_([e.id for e in exams]), ExamSession.student_id_db.in_(student_ids))
+            .all()
+        )
+        for s in sessions:
+            session_map[(s.exam_id, s.student_id_db)] = s
+
+    rows: list[LiveStudentRow] = []
+    live_count = in_progress_count = preparing_count = not_started_count = 0
+    submitted_count = expired_count = terminated_count = 0
+    elevated_risk = pending_total = 0
+
+    for exam in exams:
+        for sid in sorted(ids_by_exam.get(exam.id, set())):
+            student = students.get(sid)
+            if student is None:
+                continue
+            session = session_map.get((exam.id, sid))
+            status = "NOT_STARTED"
+            monitor_status = "IDLE"
+            session_id = session_token = None
+            started_at = ends_at = last_activity = None
+            trust_score: float | None = None
+            trust_level = "NORMAL"
+            risk_level = "NORMAL"
+            risk_index: float | None = None
+            camera = microphone = False
+            pending = incidents = evidence = events_n = 0
+            latest_event: str | None = None
+
+            if session is not None:
+                status = (session.status or "").upper()
+                session_id = session.id
+                session_token = session.session_token
+                started_at = session.start_time
+                ends_at = session.end_time
+                last_activity = session.last_activity_at
+                rc = session.readiness
+                if rc is not None:
+                    camera = bool(rc.camera_checked)
+                    microphone = bool(rc.microphone_checked)
+                incidents = len(session.incidents or [])
+                pending = sum(1 for i in (session.incidents or []) if (i.review_status or "PENDING") == "PENDING")
+                evidence = len(session.evidence_records or [])
+                events = session.proctoring_events or []
+                events_n = len(events)
+                last_ts = _latest_trust(session)
+                if last_ts is not None:
+                    trust_score = round(float(last_ts.trust_score or TRUST_BASE_SCORE), 2)
+                    trust_level = (last_ts.risk_level or trust_level_for(last_ts.trust_score or 100.0)).upper()
+                lr = _latest_risk(session)
+                if lr is not None:
+                    risk_level = (lr.level or "NORMAL").upper()
+                    risk_index = float(lr.index_value or 0.0)
+                if risk_level == "HIGH":
+                    elevated_risk += 1
+                for e in events:
+                    if e.occurred_at and (last_activity is None or e.occurred_at > last_activity):
+                        last_activity = e.occurred_at
+                    if e.event_type and latest_event is None:
+                        latest_event = str(e.event_type)
+                is_active_exam = exam.status in ("AVAILABLE", "ACTIVE")
+                if status == "ACTIVE" and is_active_exam and events_n > 0:
+                    monitor_status = "LIVE"
+                elif status == "ACTIVE":
+                    monitor_status = "ACTIVE"
+                elif status in ("SUBMITTED", "EXPIRED", "TERMINATED"):
+                    monitor_status = "DONE"
+
+            pending_total += pending
+
+            if status == "NOT_STARTED":
+                not_started_count += 1
+            elif status == "PREPARING":
+                preparing_count += 1
+            elif status == "ACTIVE":
+                in_progress_count += 1
+                if monitor_status == "LIVE":
+                    live_count += 1
+            elif status == "SUBMITTED":
+                submitted_count += 1
+            elif status == "EXPIRED":
+                expired_count += 1
+            elif status == "TERMINATED":
+                terminated_count += 1
+
+            rows.append(LiveStudentRow(
+                exam_id=exam.id,
+                exam_code=exam.exam_code,
+                exam_title=exam.title,
+                exam_status=exam.status,
+                student_db_id=sid,
+                student_id=student.student_id or "",
+                student_name=student.full_name or student.email or f"Student#{sid}",
+                student_email=student.email or "",
+                status=status,
+                monitor_status=monitor_status,
+                session_id=session_id,
+                session_token=session_token,
+                session_started_at=started_at,
+                session_ends_at=ends_at,
+                trust_score=trust_score,
+                trust_level=trust_level,
+                risk_level=risk_level,
+                risk_index=risk_index,
+                camera=camera,
+                microphone=microphone,
+                pending_incidents=pending,
+                incident_count=incidents,
+                evidence_count=evidence,
+                event_count_24h=events_n,
+                last_activity_at=last_activity,
+                latest_event=latest_event,
+            ))
+
+    return LiveStudentsOut(
+        exams=len(exams),
+        students=len(student_ids),
+        live_count=live_count,
+        in_progress_count=in_progress_count,
+        preparing_count=preparing_count,
+        not_started_count=not_started_count,
+        submitted_count=submitted_count,
+        expired_count=expired_count,
+        terminated_count=terminated_count,
+        elevated_risk=elevated_risk,
+        pending_incidents=pending_total,
+        rows=rows,
+    )
 
 
 @router.get("/overview", response_model=ProctoringMonitorSummary)
@@ -286,6 +495,12 @@ def monitor_session_detail(
         key=lambda e: (e.captured_at or e.id),
         reverse=True,
     )
+    trust_rows = sorted(
+        (s.trust_rows or []),
+        key=lambda r: (r.recorded_at or r.id),
+        reverse=True,
+    )
+    trust_score, trust_level, _ = _trust_snapshot(s)
     return ProctoringMonitorDetail(
         exam_session_id=s.id,
         session_token=s.session_token or "",
@@ -310,6 +525,21 @@ def monitor_session_detail(
                 recorded_at=r.recorded_at,
             )
             for r in risk_rows
+        ],
+        trust_score=round(trust_score, 2),
+        trust_level=trust_level,
+        trust_rows=[
+            ProctoringMonitorTrustRow(
+                id=r.id,
+                trust_score=float(r.trust_score or TRUST_BASE_SCORE),
+                delta=float(r.delta or 0.0),
+                level=(r.risk_level or trust_level_for(r.trust_score or 100.0)).upper(),
+                source=r.source or "",
+                reason=r.reason or "",
+                event_types=_split(r.event_types),
+                recorded_at=r.recorded_at,
+            )
+            for r in trust_rows
         ],
         incidents=[_incident_card(i) for i in incidents],
         events=[
@@ -399,6 +629,7 @@ def monitor_ingest(
         entity_type="exam_session",
         entity_id=session.id,
         details=f"Ingest persisted risk={result['risk']['level']}, "
+        f"trust={result.get('trust', {}).get('score')}, "
         f"events={result.get('events_count', 0)}, "
         f"incidents={len(result.get('incident_candidates') or [])} to SQL.",
     )
@@ -408,6 +639,7 @@ def monitor_ingest(
         runs=result.get("runs"),
         repeated=result.get("repeated"),
         incident_candidates=result.get("incident_candidates"),
+        trust=result.get("trust") or {},
     )
 
 

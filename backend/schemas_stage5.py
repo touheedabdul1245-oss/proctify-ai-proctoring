@@ -58,6 +58,9 @@ class MonitoringSummaryOut(BaseModel):
 
     risk_level: str = "NORMAL"
     risk_index: float = 0.0
+    trust_score: float = 100.0
+    trust_level: str = "NORMAL"
+    trust_delta: float = 0.0
     event_count: int = 0
     pending_incidents: int = 0
     confirmed_incidents: int = 0

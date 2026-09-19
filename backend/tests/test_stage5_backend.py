@@ -87,6 +87,7 @@ def _seed_users(n):
     try:
         teacher = User(
             email=f"t.stage5.{n}@test.dev",
+            username=f"t.stage5.{n}",
             password_hash=hash_password("Passw0rd!"),
             full_name="Stage-5 Teacher",
             role="teacher",
@@ -96,6 +97,7 @@ def _seed_users(n):
         db.flush()
         student = User(
             email=f"s.stage5.{n}@test.dev",
+            username=f"s.stage5.{n}",
             password_hash=hash_password("Passw0rd!"),
             full_name=f"Stage-5 Student {n}",
             role="student",
@@ -189,8 +191,8 @@ def _seed_exam(n, teacher_id, student_id_db, status="ACTIVE", total_marks=30, pa
         db.close()
 
 
-def _login(client, email):
-    r = client.post("/api/auth/login", json={"email": email, "password": "Passw0rd!"})
+def _login(client, value):
+    r = client.post("/api/auth/login", json={"username": value, "password": "Passw0rd!"})
     assert r.status_code == 200, r.text
     tok = r.json()["access_token"]
     return {"Authorization": f"Bearer {tok}"}

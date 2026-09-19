@@ -10,11 +10,15 @@ export default function AssignTab({ exam, onChanged }) {
   const [selClasses, setSelClasses] = useState([])
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState(null)
+  const [summary, setSummary] = useState(null)
 
   const assigned = exam.assigned_students || []
   const assignedIds = new Set(assigned.map((s) => s.id))
   const assignedClasses = exam.assigned_batches || []
   const assignedClassIds = new Set(assignedClasses.map((c) => c.id))
+
+  const batchCoverage = assignedClasses.reduce((acc, c) => acc + Number(c.student_count || 0), 0)
+  const coverage = assigned.length + batchCoverage
 
   const available = (students.data || []).filter((s) => !assignedIds.has(s.id))
   const availableClasses = (classes.data || []).filter((c) => !assignedClassIds.has(c.id))
@@ -23,11 +27,13 @@ export default function AssignTab({ exam, onChanged }) {
     if (!selStudents.length && !selClasses.length) return
     setBusy(true)
     setErr(null)
+    setSummary(null)
     try {
-      await api(`/exams/${exam.id}/assign`, {
+      const res = await api(`/exams/${exam.id}/assign`, {
         method: 'POST',
         body: { student_ids: selStudents, class_ids: selClasses },
       })
+      if (res && res.assignment_summary) setSummary(res.assignment_summary)
       setSelStudents([])
       setSelClasses([])
       onChanged()
@@ -68,8 +74,38 @@ export default function AssignTab({ exam, onChanged }) {
 
   return (
     <div>
-      <Card title={`Assign students or batches (${assigned.length} direct + ${assignedClasses.length} batches)`}>
+      <Card
+        title={`Assign students or batches (${coverage} student${coverage === 1 ? '' : 's'} covered)`}
+      >
         {locked && <p className="muted">Assignment is locked for {exam.status} exams.</p>}
+        <div className="summary-strip">
+          <div className="summary-item">
+            <strong>{assigned.length}</strong> direct students
+          </div>
+          <div className="summary-item">
+            <strong>{assignedClasses.length}</strong> batches ({batchCoverage} students)
+          </div>
+          <div className="summary-item">
+            <strong>{coverage}</strong> total covered
+          </div>
+        </div>
+        {summary && (
+          <div className="success-box">
+            <strong>Assignment result</strong> — added {summary.added_students || 0} student
+            {summary.added_students === 1 ? '' : 's'}, {summary.added_batches || 0} batch
+            {summary.added_batches === 1 ? '' : 'es'}
+            {Boolean(summary.duplicate_students || summary.duplicate_batches) && (
+              <> · {summary.duplicate_students || 0} duplicate handl
+              {summary.duplicate_students === 1 ? '' : 'es'} ignored, {summary.duplicate_batches || 0} duplicate batch
+              {summary.duplicate_batches === 1 ? '' : 'es'} ignored</>
+            )}
+            {Boolean(summary.invalid_students || summary.invalid_batches) && (
+              <> · {summary.invalid_students || 0} invalid, {summary.invalid_batches || 0} invalid batch
+              {summary.invalid_batches === 1 ? '' : 'es'}</>
+            )}
+            .
+          </div>
+        )}
         <ErrorBox error={err} />
         <div className="form-grid" style={{ marginBottom: 10 }}>
           <Field label="Add students">

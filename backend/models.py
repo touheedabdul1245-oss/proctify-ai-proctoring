@@ -22,6 +22,7 @@ class User(Base):
 
     id = Column(Integer, primary_key=True)
     email = Column(String(255), unique=True, nullable=False, index=True)
+    username = Column(String(100), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(255), nullable=False)
     role = Column(SqlEnum("student", "teacher", "admin", name="user_role"), nullable=False, index=True)
@@ -156,7 +157,7 @@ class Exam(Base):
     subject = Column(String(255), nullable=True)
     duration_minutes = Column(Integer, nullable=False, default=60)
     total_marks = Column(Integer, nullable=False, default=0)
-    status = Column(SqlEnum("DRAFT", "SCHEDULED", "AVAILABLE", "ACTIVE", "COMPLETED", "ARCHIVED", name="exam_status"), nullable=False, default="DRAFT", index=True)
+    status = Column(SqlEnum("DRAFT", "SCHEDULED", "AVAILABLE", "ACTIVE", "COMPLETED", "CANCELLED", "TERMINATED", "ARCHIVED", name="exam_status"), nullable=False, default="DRAFT", index=True)
     pass_marks = Column(Integer, nullable=True)
     scheduled_start = Column(DateTime, nullable=True)
     scheduled_end = Column(DateTime, nullable=True)

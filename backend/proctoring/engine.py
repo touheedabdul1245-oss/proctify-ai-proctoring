@@ -54,6 +54,7 @@ from .constants import (
     TRUST_REPEAT_ESCALATION_PER_STEP,
     TRUST_REPEAT_MAX_STEPS,
     TRUST_SUSTAINED_REF_SECONDS,
+    trust_level_for,
 )
 from .events import events_from_observation
 from .evidence import store_audio, store_image
@@ -73,9 +74,6 @@ __all__ = [
     "stream_from_observation",
     "stream_frame",
 ]
-
-
-INGEST_SIMULATE_ALLOWED: bool = bool(SIMULATE_ALLOWED)
 
 
 def simulate_allowed() -> bool:
@@ -124,6 +122,7 @@ class SessionRisk:
         self._trust_last_ts: Optional[float] = None
         self._trust_last_details: Dict[str, Any] = {
             "source": "baseline", "score": TRUST_BASE_SCORE,
+            "level": trust_level_for(TRUST_BASE_SCORE),
             "delta": 0.0, "reason": "session start", "families": [],
         }
 
@@ -177,8 +176,13 @@ class SessionRisk:
 
         snapshot = self.risk.snapshot()
         incident_candidates = []
+        repeated = {}
         if risk_result:
-            repeated = {f: c for f, c in self._repeated.items() if c}
+            # ``_repeated`` counts *additional* distinct runs after the first
+            # (so 2 distinct runs -> 1). The incident builder + INCIDENT_MIN_*
+            # thresholds are defined in DISTINCT-run terms, so hand it the
+            # actual run count (c + 1) resolved per family.
+            repeated = {f: c + 1 for f, c in self._repeated.items() if c}
             if repeated:
                 incident_candidates = incident_builder.build(
                     repeated,
@@ -190,6 +194,8 @@ class SessionRisk:
             "events": confirmed,
             "risk": snapshot,
             "incident_candidates": incident_candidates,
+            "runs": dict(self._runs),
+            "repeated": dict(repeated) if repeated else dict(self._repeated),
             "trust": dict(self._trust_last_details),
         }
         return dict(self._last)
@@ -255,6 +261,7 @@ class SessionRisk:
             self._trust_last_details = {
                 "source": "penalty",
                 "score": round(min(TRUST_CEILING, max(TRUST_FLOOR, self._trust)), 2),
+                "level": trust_level_for(self._trust),
                 "delta": round(self._trust - prev, 2),
                 "reason": "; ".join(reasons) or "confirmed events",
                 "families": families,
@@ -262,10 +269,11 @@ class SessionRisk:
             return self._trust - prev
 
         # --- recovery: only after a sustained clean period, capped by the
-        #     current hysteresis band ceiling (frozen at 0 while HIGH). ----
+        #     current TRUST band's ceiling (frozen at 0 while HIGH). ------
         if self._trust_last_ts is not None and \
                 now - self._trust_last_ts >= TRUST_RECOVERY_CLEAN_SECONDS:
-            ceiling = TRUST_BAND_CEILING.get(self.risk.label, TRUST_BASE_SCORE)
+            level = trust_level_for(self._trust)
+            ceiling = TRUST_BAND_CEILING.get(level, TRUST_BASE_SCORE)
             if self._trust < ceiling:
                 delta = (ceiling - self._trust) * (
                     (now - self._trust_last_ts) / TRUST_RECOVERY_CONSTANT_SECONDS
@@ -275,9 +283,10 @@ class SessionRisk:
                 self._trust_last_details = {
                     "source": "recovery",
                     "score": round(min(TRUST_CEILING, max(TRUST_FLOOR, self._trust)), 2),
+                    "level": trust_level_for(self._trust),
                     "delta": round(self._trust - prev, 2),
                     "reason": f"clean for {now - self._trust_last_ts:.0f}s "
-                              f"(band {self.risk.label}, ceiling {ceiling:.0f})",
+                              f"(trust band {level}, ceiling {ceiling:.0f})",
                     "families": [],
                 }
                 return self._trust - prev
@@ -285,6 +294,7 @@ class SessionRisk:
         self._trust_last_details = {
             "source": "steady",
             "score": round(self._trust, 2),
+            "level": trust_level_for(self._trust),
             "delta": 0.0,
             "reason": "" if confirmed else "no change",
             "families": [f for evt in confirmed

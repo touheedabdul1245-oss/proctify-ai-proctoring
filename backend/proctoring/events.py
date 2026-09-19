@@ -31,16 +31,11 @@ from .constants import (
     EVENT_PHONE,
     EVENT_SOURCES,
     EVENT_SPEECH,
+    GAZE_DEV_THRESHOLD,
+    HEAD_PITCH_THRESHOLD,
+    HEAD_YAW_THRESHOLD,
 )
 
-
-def _max_conf(detections: List[Dict[str, Any]], class_name: str) -> Optional[Dict[str, Any]]:
-    best = None
-    for d in detections:
-        if d.get("class_name") == class_name:
-            if best is None or d.get("confidence", 0) > best.get("confidence", 0):
-                best = d
-    return best
 
 def _event(event_type: str, confidence: float,
            source: Optional[str] = None,
@@ -76,9 +71,7 @@ def events_from_observation(observation: Dict[str, Any]) -> List[Dict[str, Any]]
         class_name = obj.get("class_name")
         if class_name == "phone":
             events.append(_event(EVENT_PHONE, obj.get("confidence", 0.9)))
-            # keep the single best per class? bbox:
-            idx = None
-        elif class_name == "earphone" or class_name == "earphone":
+        elif class_name == "earphone":
             events.append(_event(EVENT_EARPHONE, obj.get("confidence", 0.9)))
     # dedupe: keep the highest-confidence phone/earphone event only
     events = _dedupe(events)
@@ -102,7 +95,8 @@ def events_from_observation(observation: Dict[str, Any]) -> List[Dict[str, Any]]
         for f in faces:
             gaze = f.get("gaze") or {}
             if gaze.get("iris_visible") and (
-                abs(gaze.get("x", 0.0)) > 0.34 or abs(gaze.get("y", 0.0)) > 0.30
+                abs(gaze.get("x", 0.0)) > GAZE_DEV_THRESHOLD
+                or abs(gaze.get("y", 0.0)) > GAZE_DEV_THRESHOLD * 0.9
             ):
                 events.append(_event(EVENT_GAZE_DEVIATION, 0.7, bbox=f.get("bbox")))
 
@@ -111,7 +105,7 @@ def events_from_observation(observation: Dict[str, Any]) -> List[Dict[str, Any]]
     if pose.get("available"):
         yaw = abs(float(pose.get("yaw", 0.0)))
         pitch = abs(float(pose.get("pitch", 0.0)))
-        if yaw > 28.0 or pitch > 24.0:
+        if yaw > HEAD_YAW_THRESHOLD or pitch > HEAD_PITCH_THRESHOLD:
             events.append(_event(EVENT_HEAD_DEVIATION, 0.6))
 
     # --- Audio / speech -----------------------------------------------------

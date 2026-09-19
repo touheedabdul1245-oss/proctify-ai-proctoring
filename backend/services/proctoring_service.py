@@ -21,8 +21,23 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from ..audit import audit
-from ..models import AIServiceEvent, Evidence, ExamSession, Incident, RiskScore, User
-from ..proctoring.constants import EVENT_SEVERITY, RISK_BAND_UPPER, RISK_LEVELS
+from ..models import (
+    AIServiceEvent,
+    Evidence,
+    ExamSession,
+    Incident,
+    RiskScore,
+    TrustScore,
+    User,
+)
+from ..proctoring.constants import (
+    EVENT_SEVERITY,
+    RISK_BAND_UPPER,
+    RISK_LEVELS,
+    TRUST_BASE_SCORE,
+    TRUST_LEVEL_NORMAL,
+    trust_level_for,
+)
 from ..proctoring.registry import get_engine
 from ..proctoring.evidence import store_image
 from .notifications import notify_teachers
@@ -52,6 +67,73 @@ def _level_of_index(index: float) -> str:
         if idx <= upper:
             return RISK_LEVELS[i]
     return RISK_LEVELS[-1]
+
+
+def _persist_trust(
+    db: Session,
+    session: ExamSession,
+    signal: Dict[str, Any],
+    now: datetime,
+) -> None:
+    """Write the 0..100 trust history into SQL (the source of truth).
+
+    Guarantees:
+      * every session starts with ONE baseline row (score 100, delta 0);
+      * a NEW row is written ONLY when the engine's score actually moved vs.
+        the last persisted row (delta = current - last, negative for a
+        penalty, positive for recovery) — quiet/steady ingests never flood
+        the history;
+      * the trust band label (risk_level) is derived from the score via the
+        single source of truth (constants.trust_level_for), never duplicated.
+    """
+    trust = signal.get("trust") or {}
+    try:
+        engine_score = float(trust.get("score", TRUST_BASE_SCORE))
+    except (TypeError, ValueError):
+        engine_score = TRUST_BASE_SCORE
+
+    last = (
+        db.query(TrustScore)
+        .filter(TrustScore.exam_session_id == session.id)
+        .order_by(TrustScore.id.desc())
+        .first()
+    )
+    if last is None:
+        db.add(
+            TrustScore(
+                exam_session_id=session.id,
+                trust_score=TRUST_BASE_SCORE,
+                delta=0.0,
+                risk_level=TRUST_LEVEL_NORMAL,
+                source="baseline",
+                reason="session start",
+                event_types=None,
+                recorded_at=now,
+            )
+        )
+        db.flush()
+        last_score = TRUST_BASE_SCORE
+    else:
+        last_score = _to_float(last.trust_score)
+
+    if abs(engine_score - last_score) < 0.005:
+        return
+
+    step_delta = round(engine_score - last_score, 2)
+    source = trust.get("source") or ("recovery" if step_delta > 0 else "penalty")
+    db.add(
+        TrustScore(
+            exam_session_id=session.id,
+            trust_score=engine_score,
+            delta=step_delta,
+            risk_level=trust.get("level") or trust_level_for(engine_score),
+            source=source,
+            reason=trust.get("reason") or "",
+            event_types=",".join(trust.get("families") or []) or None,
+            recorded_at=now,
+        )
+    )
+    db.flush()
 
 
 def ingest_and_persist(
@@ -182,6 +264,19 @@ def ingest_and_persist(
         )
         new_incidents.append({"incident_id": incident.id, "status": "PENDING"})
 
+    _persist_trust(db, session, signal, now)
+
+    trust = signal.get("trust") or {}
+    try:
+        trust_score = float(trust.get("score", TRUST_BASE_SCORE))
+    except (TypeError, ValueError):
+        trust_score = TRUST_BASE_SCORE
+    trust_delta = trust.get("delta", 0.0)
+    try:
+        trust_delta = float(trust_delta)
+    except (TypeError, ValueError):
+        trust_delta = 0.0
+
     return {
         "risk": {
             "level": level,
@@ -191,6 +286,13 @@ def ingest_and_persist(
         },
         "runs": signal.get("runs"),
         "repeated": signal.get("repeated"),
+        "trust": {
+            "score": round(trust_score, 2),
+            "level": trust.get("level") or trust_level_for(trust_score),
+            "delta": trust_delta,
+            "source": trust.get("source") or "baseline",
+            "reason": trust.get("reason") or "",
+        },
         "incident_candidates": [
             {"incident_id": i["incident_id"], "status": i["status"]} for i in new_incidents
         ],

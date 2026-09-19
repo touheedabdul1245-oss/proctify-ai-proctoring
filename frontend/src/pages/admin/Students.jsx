@@ -1,8 +1,9 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api, errorMessage } from '../../api'
 import { PageHeader, Card, Table, Badge, Modal, Field, ErrorBox, Loading, useAsync, fmtDate } from '../../components/Ui'
 
-const EMPTY = { student_id: '', full_name: '', email: '', password: '', class_code: '' }
+const EMPTY = { student_id: '', full_name: '', username: '', email: '', password: '', class_code: '' }
 
 export default function Students() {
   const [q, setQ] = useState('')
@@ -28,6 +29,7 @@ export default function Students() {
   const cols = [
     { key: 'student_id', label: 'Student ID', render: (r) => <span className="mono">{r.student_id}</span> },
     { key: 'full_name', label: 'Name' },
+    { key: 'username', label: 'Username', render: (r) => <span className="mono">@{r.username || '—'}</span> },
     { key: 'email', label: 'Email' },
     { key: 'class_name', label: 'Class', render: (r) => r.class_name || '—' },
     { key: 'is_active', label: 'Status', render: (r) => (r.is_active ? <Badge status="valid" /> : <Badge status="danger" />) },
@@ -41,9 +43,9 @@ export default function Students() {
         subtitle="Individual student records"
         actions={
           <>
-            <button className="btn btn-ghost" onClick={() => (window.location.href = '/admin/enrollment')}>
+            <Link className="btn btn-ghost" to="/admin/enrollment">
               Bulk enrollment
-            </button>
+            </Link>
             <button className="btn btn-primary" onClick={() => setCreating(true)}>
               + Add student
             </button>
@@ -52,9 +54,19 @@ export default function Students() {
       />
       <Card>
         <Field label="Search students">
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="ID, name, or email…" />
+          <input className="input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="ID, name, email, or username…" />
         </Field>
-        {list.loading ? <Loading /> : <Table columns={cols} rows={list.data || []} />}
+        {list.loading ? (
+          <Loading />
+        ) : list.error ? (
+          <div className="error-state" role="alert">
+            <div className="error-state-title">Could not load students</div>
+            <div className="error-state-hint">{list.error?.message || 'Something went wrong'}</div>
+            <button className="btn btn-secondary btn-sm" onClick={list.refresh}>Try again</button>
+          </div>
+        ) : (
+          <Table columns={cols} rows={list.data || []} />
+        )}
       </Card>
 
       <Modal open={creating} onClose={() => setCreating(false)} title="Add student">
@@ -68,6 +80,9 @@ export default function Students() {
             </Field>
           </div>
           <div className="form-grid">
+            <Field label="Username" required>
+              <input value={form.username} onChange={(e) => setForm((f) => ({ ...f, username: e.target.value }))} placeholder="Unique, lowercase letters/numbers/dots/dashes" required />
+            </Field>
             <Field label="Email" required>
               <input type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} required />
             </Field>

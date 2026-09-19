@@ -3,10 +3,11 @@ import { Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { errorMessage } from '../api'
 import { ErrorBox } from '../components/Ui'
+import CommandBackground from '../components/CommandBackground'
 
 export default function Login() {
   const { user, login } = useAuth()
-  const [email, setEmail] = useState('')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [err, setErr] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -20,7 +21,7 @@ export default function Login() {
     setBusy(true)
     setErr(null)
     try {
-      const u = await login(email, password)
+      const u = await login(username, password)
       navigate(location.state?.from?.pathname || `/${u.role}`, { replace: true })
     } catch (e2) {
       setErr(errorMessage(e2))
@@ -31,20 +32,22 @@ export default function Login() {
 
   return (
     <div className="login-page">
-      <div className="login-card">
+      <CommandBackground dense />
+      <div className="login-card page-enter">
         <div className="login-brand">
           <span className="brand-mark big">P</span>
           <h1>PROCTIFY</h1>
-          <p className="muted">AI-Assisted Online Examination System</p>
+          <p className="muted">AI-Assisted Examination Command Center</p>
         </div>
         <form onSubmit={submit}>
           <label className="field">
-            <span className="field-label">Email</span>
+            <span className="field-label">Username</span>
             <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="Enter your username"
+              autoComplete="username"
               required
               autoFocus
             />
@@ -61,16 +64,9 @@ export default function Login() {
           </label>
           <ErrorBox error={err} />
           <button className="btn btn-primary btn-block" disabled={busy}>
-            {busy ? 'Signing in…' : 'Sign in'}
+            {busy ? 'Authenticating…' : 'Sign in'}
           </button>
         </form>
-        <div className="login-hint">
-          <p className="muted">Demo accounts</p>
-          <ul>
-            <li>admin@proctify.dev / Admin@123</li>
-            <li>teacher@proctify.dev / Teacher@123</li>
-          </ul>
-        </div>
       </div>
     </div>
   )

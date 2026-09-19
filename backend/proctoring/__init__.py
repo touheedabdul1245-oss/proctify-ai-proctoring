@@ -22,7 +22,9 @@ Public surface (import * from backend.proctoring):
 """
 from .constants import (
     COOLDOWN_BY_FAMILY,
+    INCIDENT_BY_EVENT,
     INCIDENT_MIN_RUNS,
+    INCIDENT_MIN_RUNS_BY_FAMILY,
     RISK_LABELS,
     RISK_WEIGHTS,
     SIMULATE_ALLOWED,
@@ -55,7 +57,9 @@ IO_DECODE_DATA_URL = decode_data_url  # aliased for route-layer import safety
 
 __all__ = [
     "COOLDOWN_BY_FAMILY",
+    "INCIDENT_BY_EVENT",
     "INCIDENT_MIN_RUNS",
+    "INCIDENT_MIN_RUNS_BY_FAMILY",
     "RISK_LABELS",
     "RISK_WEIGHTS",
     "SIMULATE_ALLOWED",

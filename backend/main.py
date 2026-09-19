@@ -10,6 +10,7 @@ from .config import BOOTSTRAP_ADMIN_EMAIL, BOOTSTRAP_ADMIN_PASSWORD
 from .database import SessionLocal, init_db
 from .models import Student, Teacher, User
 from .auth import hash_password
+from .usernames import slugify_email
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("proctify")
@@ -43,6 +44,7 @@ def bootstrap():
         if db.query(User).count() == 0:
             admin = User(
                 email=BOOTSTRAP_ADMIN_EMAIL,
+                username=slugify_email(BOOTSTRAP_ADMIN_EMAIL),
                 password_hash=hash_password(BOOTSTRAP_ADMIN_PASSWORD),
                 full_name="System Administrator",
                 role="admin",

@@ -3,29 +3,46 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { api } from '../api'
 import { timeAgo } from '../pages/teacher/monitorUtils'
+import CommandBackground from './CommandBackground'
+
+const ICONS = {
+  dashboard: '◈',
+  exams: '▤',
+  create: '⊕',
+  proctoring: '◎',
+  monitor: '◉',
+  results: '▦',
+  analytics: '◔',
+  users: '◍',
+  students: '☰',
+  enrollment: '⇪',
+  classes: '▣',
+  mine: '▤',
+  profile: '◈',
+}
 
 const NAV = {
   admin: [
-    { to: '/admin', label: 'Dashboard', end: true },
-    { to: '/admin/users', label: 'Users' },
-    { to: '/admin/students', label: 'Students' },
-    { to: '/admin/enrollment', label: 'Bulk Enrollment' },
-    { to: '/admin/classes', label: 'Classes / Batches' },
+    { to: '/admin', label: 'Dashboard', icon: 'dashboard', end: true },
+    { to: '/admin/users', label: 'Users', icon: 'users' },
+    { to: '/admin/students', label: 'Students', icon: 'students' },
+    { to: '/admin/enrollment', label: 'Bulk Enrollment', icon: 'enrollment' },
+    { to: '/admin/classes', label: 'Classes / Batches', icon: 'classes' },
   ],
   teacher: [
-    { to: '/teacher', label: 'Dashboard', end: true },
-    { to: '/teacher/exams', label: 'Exams' },
-    { to: '/teacher/exams/new', label: 'Create Exam' },
-    { to: '/teacher/proctoring', label: 'Proctoring' },
-    { to: '/teacher/monitor', label: 'Live Monitor' },
-    { to: '/teacher/results', label: 'Results' },
-    { to: '/teacher/analytics', label: 'Analytics' },
+    { to: '/teacher', label: 'Dashboard', icon: 'dashboard', end: true },
+    { to: '/teacher/monitor', label: 'Live Monitor', icon: 'monitor' },
+    { to: '/teacher/exams', label: 'Exams', icon: 'exams' },
+    { to: '/teacher/exams/new', label: 'Create Exam', icon: 'create' },
+    { to: '/teacher/results', label: 'Results', icon: 'results' },
+    { to: '/teacher/analytics', label: 'Analytics', icon: 'analytics' },
+    { to: '/teacher/proctoring', label: 'Proctoring', icon: 'proctoring' },
   ],
   student: [
-    { to: '/student', label: 'Dashboard', end: true },
-    { to: '/student/exams', label: 'My Exams' },
-    { to: '/student/results', label: 'My Results' },
-    { to: '/student/profile', label: 'Profile' },
+    { to: '/student', label: 'Dashboard', icon: 'dashboard', end: true },
+    { to: '/student/exams', label: 'My Exams', icon: 'mine' },
+    { to: '/student/results', label: 'My Results', icon: 'results' },
+    { to: '/student/profile', label: 'Profile', icon: 'profile' },
   ],
 }
 
@@ -142,50 +159,54 @@ export function Layout({ role }) {
   const links = NAV[role] || []
 
   return (
-    <div className="shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">P</span>
-          <div>
-            <strong>PROCTIFY</strong>
-            <small>Examination System</small>
-          </div>
-        </div>
-        <nav className="nav">
-          {links.map((l) => (
-            <NavLink
-              key={l.to}
-              to={l.to}
-              end={l.end}
-              className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}
-            >
-              {l.label}
-            </NavLink>
-          ))}
-        </nav>
-        <div className="sidebar-foot">
-          <span className="pill">{role}</span>
-        </div>
-      </aside>
-      <div className="main">
-        <header className="topbar">
-          <div className="topbar-title">PROCTIFY</div>
-          <div className="topbar-user">
-            <NotificationsBell />
-            <span className="avatar">{user?.full_name?.[0]?.toUpperCase()}</span>
-            <div className="topbar-identity">
-              <strong>{user?.full_name}</strong>
-              <small>{user?.email}</small>
+    <>
+      <CommandBackground />
+      <div className="shell">
+        <aside className="sidebar">
+          <div className="brand">
+            <span className="brand-mark">P</span>
+            <div>
+              <strong>PROCTIFY</strong>
+              <small>AI Examination System</small>
             </div>
-            <button className="btn btn-ghost" onClick={handleLogout}>
-              Logout
-            </button>
           </div>
-        </header>
-        <main className="content">
-          <Outlet />
-        </main>
+          <nav className="nav">
+            {links.map((l) => (
+              <NavLink
+                key={l.to}
+                to={l.to}
+                end={l.end}
+                className={({ isActive }) => 'nav-link' + (isActive ? ' active' : '')}
+              >
+                <span className="nav-ico" aria-hidden="true">{ICONS[l.icon] || '·'}</span>
+                {l.label}
+              </NavLink>
+            ))}
+          </nav>
+          <div className="sidebar-foot">
+            <span className="pill">{role}</span>
+          </div>
+        </aside>
+        <div className="main">
+          <header className="topbar">
+            <div className="topbar-title">COMMAND CENTER</div>
+            <div className="topbar-user">
+              <NotificationsBell />
+              <span className="avatar">{user?.full_name?.[0]?.toUpperCase()}</span>
+              <div className="topbar-identity">
+                <strong>{user?.full_name}</strong>
+                <small>@{user?.username}</small>
+              </div>
+              <button className="btn btn-ghost" onClick={handleLogout}>
+                Logout
+              </button>
+            </div>
+          </header>
+          <main className="content page-enter">
+            <Outlet />
+          </main>
+        </div>
       </div>
-    </div>
+    </>
   )
 }

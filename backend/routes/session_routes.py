@@ -45,12 +45,13 @@ from ..schemas import (
     SessionStateOut,
     SubmitResponse,
 )
+from ..services.exam_state import reconcile_exam
 from ..services.notifications import notify as notify_user
 
 router = APIRouter(prefix="/api", tags=["student-session"])
 
 ACTIVE_STATUSES = ("ACTIVE",)
-CLOSED_STATUSES = ("SUBMITTED", "EXPIRED")
+CLOSED_STATUSES = ("SUBMITTED", "EXPIRED", "TERMINATED")
 OPEN_EXAM_STATUSES = ("SCHEDULED", "AVAILABLE", "ACTIVE")
 
 
@@ -138,8 +139,11 @@ def _session_out(session: ExamSession) -> SessionOut:
     )
 
 
-def _check_exam_window(exam: Exam):
-    """Gate helper: must be published, open, and inside the scheduled window."""
+def _check_exam_window(db: Session, exam: Exam):
+    """Gate helper: reconcile first, then require published + open + in window.
+
+    The DB runs on the server clock; the frontend never decides openness."""
+    reconcile_exam(db, exam)
     if not exam.is_published:
         raise HTTPException(status_code=403, detail="Exam has not been published yet")
     if exam.status not in OPEN_EXAM_STATUSES:
@@ -237,6 +241,14 @@ def _summary(db: Session, session: ExamSession) -> SubmitResponse:
     total = db.query(Question).filter(Question.exam_id == session.exam_id).count()
     answered = sum(1 for a in session.answers if a.selected_option)
     marked = sum(1 for a in session.answers if a.marked_for_review)
+    if session.status == "TERMINATED":
+        message = "This exam was terminated by the invigilator. Your answers were preserved."
+    elif session.status == "SUBMITTED":
+        message = "Exam submitted."
+    elif session.status == "EXPIRED":
+        message = "Time is up — exam was submitted automatically."
+    else:
+        message = f"Session is {session.status}."
     return SubmitResponse(
         session_token=session.session_token,
         status=session.status,
@@ -246,7 +258,7 @@ def _summary(db: Session, session: ExamSession) -> SubmitResponse:
         unanswered_count=max(0, total - answered),
         submitted_at=session.submitted_at,
         auto=session.status == "EXPIRED",
-        message="Exam submitted." if session.status == "SUBMITTED" else "Time is up — exam was submitted automatically.",
+        message=message,
     )
 
 
@@ -312,7 +324,7 @@ def create_exam_session(
     exam = db.query(Exam).filter(Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
-    _check_exam_window(exam)
+    _check_exam_window(db, exam)
 
     session = (
         db.query(ExamSession)
@@ -421,7 +433,7 @@ def start_session(
         raise HTTPException(status_code=422, detail="Complete all readiness checks before starting")
 
     exam = db.query(Exam).filter(Exam.id == session.exam_id).first()
-    _check_exam_window(exam)
+    _check_exam_window(db, exam)
 
     now = _now()
     session.status = "ACTIVE"

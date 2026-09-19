@@ -39,14 +39,24 @@ DEFAULT_STUDENT_PASSWORD = os.environ.get("PROCTIFY_STUDENT_PASSWORD", "Student@
 # Bulk enrollment limits.
 MAX_BULK_ROWS = int(os.environ.get("PROCTIFY_MAX_BULK_ROWS", 2000))
 
-# Exam state machine.
-EXAM_STATES = ["DRAFT", "SCHEDULED", "AVAILABLE", "ACTIVE", "COMPLETED", "ARCHIVED"]
+# Exam state machine (the backend/database is authoritative).
+#   DRAFT      – authoring, not yet scheduled.
+#   SCHEDULED  – a slot is set; auto-flips to AVAILABLE when the window opens.
+#   AVAILABLE  – inside the window; students may start (teacher can go ACTIVE).
+#   ACTIVE     – live/session is being taken (also reached when a session starts).
+#   COMPLETED  – window closed (or teacher closed it); sessions auto-finalized.
+#   CANCELLED  – teacher cancelled before/while open; nothing was graded.
+#   TERMINATED – teacher terminated a live/available exam; answers preserved.
+#   ARCHIVED   – soft-gone from the active list.
+EXAM_STATES = ["DRAFT", "SCHEDULED", "AVAILABLE", "ACTIVE", "COMPLETED", "CANCELLED", "TERMINATED", "ARCHIVED"]
 EXAM_TRANSITIONS = {
-    "DRAFT": ["SCHEDULED", "ARCHIVED"],
-    "SCHEDULED": ["AVAILABLE", "DRAFT", "COMPLETED", "ARCHIVED"],
-    "AVAILABLE": ["ACTIVE", "COMPLETED", "ARCHIVED", "SCHEDULED"],
-    "ACTIVE": ["COMPLETED", "ARCHIVED"],
+    "DRAFT": ["SCHEDULED", "CANCELLED", "ARCHIVED"],
+    "SCHEDULED": ["AVAILABLE", "DRAFT", "COMPLETED", "CANCELLED", "ARCHIVED"],
+    "AVAILABLE": ["ACTIVE", "COMPLETED", "CANCELLED", "SCHEDULED", "ARCHIVED"],
+    "ACTIVE": ["COMPLETED", "TERMINATED", "CANCELLED"],
     "COMPLETED": ["ARCHIVED"],
+    "CANCELLED": [],
+    "TERMINATED": [],
     "ARCHIVED": [],
 }
 

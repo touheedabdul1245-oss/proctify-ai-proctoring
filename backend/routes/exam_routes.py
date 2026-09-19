@@ -23,8 +23,28 @@ from ..schemas import (
     StudentOut,
 )
 from ..services.enrollment_service import generate_exam_code
+from ..services.exam_state import reconcile_exam, terminate_exam_sessions
 
 router = APIRouter(prefix="/api", tags=["exams"])
+
+EXAM_TERMINAL_EDIT = ("CANCELLED", "TERMINATED", "COMPLETED", "ARCHIVED")
+
+
+def _ensure_exam_writable(exam: Exam, action: str):
+    if exam.status in ("CANCELLED", "TERMINATED"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"A {exam.status.lower()} exam cannot be {action}",
+        )
+
+
+def _validate_marks(total_marks: int, pass_marks, start, end, duration_minutes):
+    if total_marks and pass_marks is not None and pass_marks > total_marks:
+        raise HTTPException(status_code=422, detail="Passing marks cannot exceed total marks")
+    if duration_minutes is not None and duration_minutes < 1:
+        raise HTTPException(status_code=422, detail="Duration must be at least 1 minute")
+    if start is not None and end is not None and end <= start:
+        raise HTTPException(status_code=422, detail="scheduled_end must be after scheduled_start")
 
 
 # ---------------------------------------------------------------------------
@@ -103,19 +123,12 @@ def list_exams(
     if q:
         query = query.filter(Exam.title.ilike(f"%{q}%"))
     exams = query.order_by(Exam.created_at.desc()).all()
+    for e in exams:
+        reconcile_exam(db, e)
     return [_exam_to_out(db, e) for e in exams]
 
 
-@router.get("/exams/{exam_id}", response_model=ExamDetail)
-def get_exam(
-    exam_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_teacher),
-):
-    exam = db.query(Exam).filter(Exam.id == exam_id).first()
-    if not exam:
-        raise HTTPException(status_code=404, detail="Exam not found")
-
+def _exam_detail(db: Session, exam: Exam, summary: dict | None = None) -> ExamDetail:
     questions = db.query(Question).filter(Question.exam_id == exam.id).order_by(Question.order_index).all()
     assignments = db.query(ExamAssignment).filter(ExamAssignment.exam_id == exam.id).all()
     batch_assignments = db.query(ExamBatchAssignment).filter(ExamBatchAssignment.exam_id == exam.id).all()
@@ -148,7 +161,22 @@ def get_exam(
         questions=[_question_out(q) for q in questions],
         assigned_students=students,
         assigned_batches=batches,
+        assignment_summary=summary,
     )
+
+
+@router.get("/exams/{exam_id}", response_model=ExamDetail)
+def get_exam(
+    exam_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_teacher),
+):
+    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+
+    reconcile_exam(db, exam)
+    return _exam_detail(db, exam)
 
 
 @router.post("/exams", response_model=ExamOut, status_code=201)
@@ -160,6 +188,14 @@ def create_exam(
     teacher = db.query(Teacher).filter(Teacher.user_id == current_user.id).first()
     if current_user.role == "teacher" and not teacher:
         raise HTTPException(status_code=403, detail="Teacher profile required")
+
+    _validate_marks(
+        payload.total_marks or 0,
+        payload.pass_marks,
+        payload.scheduled_start,
+        payload.scheduled_end,
+        payload.duration_minutes,
+    )
 
     exam = Exam(
         title=payload.title.strip(),
@@ -194,8 +230,15 @@ def update_exam(
     exam = db.query(Exam).filter(Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
-    if exam.status == "ARCHIVED":
-        raise HTTPException(status_code=422, detail="Archived exams cannot be edited")
+    _ensure_exam_writable(exam, "edited")
+
+    _validate_marks(
+        payload.total_marks if payload.total_marks is not None else (exam.total_marks or 0),
+        payload.pass_marks,
+        payload.scheduled_start,
+        payload.scheduled_end,
+        payload.duration_minutes,
+    )
 
     for field in ["title", "description", "subject", "duration_minutes", "total_marks", "pass_marks", "scheduled_start", "scheduled_end"]:
         val = getattr(payload, field)
@@ -216,8 +259,8 @@ def delete_exam(
     exam = db.query(Exam).filter(Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
-    if exam.status in ("ACTIVE", "COMPLETED"):
-        raise HTTPException(status_code=422, detail="Active/completed exams cannot be deleted")
+    if exam.status in ("ACTIVE", "COMPLETED", "TERMINATED"):
+        raise HTTPException(status_code=422, detail="Active/completed/terminated exams cannot be deleted")
     audit(db, current_user, "EXAM_DELETE", "exams", exam.id, exam.title)
     db.delete(exam)
     db.commit()
@@ -229,7 +272,32 @@ def delete_exam(
 # ---------------------------------------------------------------------------
 
 def _apply_question(db, payload: QuestionCreate, q: Question):
-    q.question_text = payload.question_text.strip()
+    text = (payload.question_text or "").strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Question text cannot be empty")
+    if payload.marks is None or payload.marks < 1:
+        raise HTTPException(status_code=422, detail=f"Marks must be at least 1 (got {payload.marks})")
+    if payload.negative_marks is None or payload.negative_marks < 0:
+        raise HTTPException(status_code=422, detail="Negative marks cannot be negative")
+
+    options = payload.options or []
+    if len(options) < 2:
+        raise HTTPException(status_code=422, detail="A question needs at least 2 options")
+    letters = set()
+    for opt in options:
+        key = (opt.option or "").upper()
+        if key not in ("A", "B", "C", "D"):
+            raise HTTPException(status_code=422, detail=f"Invalid option letter {opt.option!r}")
+        if not (opt.text or "").strip():
+            raise HTTPException(status_code=422, detail=f"Option {key} text cannot be empty")
+        letters.add(key)
+    if (payload.correct_option or "").upper() not in letters:
+        raise HTTPException(
+            status_code=422,
+            detail=f"correct_option {payload.correct_option!r} must be one of the provided options ({sorted(letters)})",
+        )
+
+    q.question_text = text
     q.marks = payload.marks
     q.order_index = payload.order_index
     q.option_a = q.option_b = q.option_c = q.option_d = None
@@ -292,6 +360,8 @@ def update_question(
     q = db.query(Question).filter(Question.id == qid, Question.exam_id == exam_id).first()
     if not q:
         raise HTTPException(status_code=404, detail="Question not found")
+    if q.exam.status not in ("DRAFT", "SCHEDULED"):
+        raise HTTPException(status_code=422, detail="Questions can only be edited on DRAFT or SCHEDULED exams")
     _apply_question(db, payload, q)
     sum_marks = sum(x for (x,) in db.query(Question.marks).filter(Question.exam_id == exam_id).all())
     q.exam.total_marks = sum_marks
@@ -311,6 +381,8 @@ def delete_question(
     if not q:
         raise HTTPException(status_code=404, detail="Question not found")
     exam = q.exam
+    if exam.status not in ("DRAFT", "SCHEDULED"):
+        raise HTTPException(status_code=422, detail="Questions can only be deleted from DRAFT or SCHEDULED exams")
     audit(db, current_user, "QUESTION_DELETE", "questions", q.id)
     db.delete(q)
     db.flush()
@@ -344,28 +416,57 @@ def assign_exam(
     exam = db.query(Exam).filter(Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
-    if exam.status == "ARCHIVED":
-        raise HTTPException(status_code=422, detail="Archived exams cannot be assigned")
+    if exam.status in EXAM_TERMINAL_EDIT:
+        raise HTTPException(status_code=422, detail=f"{exam.status} exams cannot be assigned")
+
+    existing_sids = {
+        sid
+        for (sid,) in db.query(ExamAssignment.student_id_db)
+        .filter(ExamAssignment.exam_id == exam_id)
+        .all()
+    }
+    existing_cids = {
+        cid
+        for (cid,) in db.query(ExamBatchAssignment.class_id)
+        .filter(ExamBatchAssignment.exam_id == exam_id)
+        .all()
+    }
 
     added_students, added_batches = 0, 0
+    invalid_students, duplicate_students = 0, 0
     for sid in payload.student_ids or []:
         if not db.query(Student).filter(Student.id == sid).first():
+            invalid_students += 1
             continue
-        if not db.query(ExamAssignment).filter(ExamAssignment.exam_id == exam_id, ExamAssignment.student_id_db == sid).first():
-            db.add(ExamAssignment(exam_id=exam_id, student_id_db=sid))
-            added_students += 1
+        if sid in existing_sids or db.query(ExamAssignment).filter(ExamAssignment.exam_id == exam_id, ExamAssignment.student_id_db == sid).first():
+            duplicate_students += 1
+            continue
+        db.add(ExamAssignment(exam_id=exam_id, student_id_db=sid))
+        added_students += 1
+    invalid_batches, duplicate_batches = 0, 0
     for cid in payload.class_ids or []:
         if not db.query(ClassGroup).filter(ClassGroup.id == cid).first():
+            invalid_batches += 1
             continue
-        if not db.query(ExamBatchAssignment).filter(ExamBatchAssignment.exam_id == exam_id, ExamBatchAssignment.class_id == cid).first():
-            db.add(ExamBatchAssignment(exam_id=exam_id, class_id=cid))
-            added_batches += 1
+        if cid in existing_cids or db.query(ExamBatchAssignment).filter(ExamBatchAssignment.exam_id == exam_id, ExamBatchAssignment.class_id == cid).first():
+            duplicate_batches += 1
+            continue
+        db.add(ExamBatchAssignment(exam_id=exam_id, class_id=cid))
+        added_batches += 1
 
     if added_students or added_batches:
         audit(db, current_user, "EXAM_ASSIGN", "exams", exam.id, f"+{added_students} students, +{added_batches} batches")
         db.commit()
 
-    return get_exam(exam_id, db, current_user)
+    summary = {
+        "added_students": added_students,
+        "duplicate_students": duplicate_students,
+        "invalid_students": invalid_students,
+        "added_batches": added_batches,
+        "duplicate_batches": duplicate_batches,
+        "invalid_batches": invalid_batches,
+    }
+    return _exam_detail(db, exam, summary=summary)
 
 
 @router.post("/exams/{exam_id}/unassign", response_model=ExamDetail)
@@ -378,19 +479,27 @@ def unassign_exam(
     exam = db.query(Exam).filter(Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
+    if exam.status in EXAM_TERMINAL_EDIT:
+        raise HTTPException(status_code=422, detail=f"{exam.status} exams cannot be unassigned")
+    if exam.status == "ACTIVE":
+        raise HTTPException(status_code=422, detail="Active exams cannot be unassigned while live")
 
+    removed_students, removed_batches = 0, 0
     for sid in payload.student_ids or []:
         row = db.query(ExamAssignment).filter(ExamAssignment.exam_id == exam_id, ExamAssignment.student_id_db == sid).first()
         if row:
             db.delete(row)
+            removed_students += 1
     for cid in payload.class_ids or []:
         row = db.query(ExamBatchAssignment).filter(ExamBatchAssignment.exam_id == exam_id, ExamBatchAssignment.class_id == cid).first()
         if row:
             db.delete(row)
+            removed_batches += 1
 
-    audit(db, current_user, "EXAM_UNASSIGN", "exams", exam.id)
+    audit(db, current_user, "EXAM_UNASSIGN", "exams", exam.id,
+          f"-{removed_students} students, -{removed_batches} batches")
     db.commit()
-    return get_exam(exam_id, db, current_user)
+    return _exam_detail(db, exam)
 
 
 @router.get("/exams/{exam_id}/assigned-students", response_model=list[StudentOut])
@@ -426,6 +535,7 @@ def schedule_exam(
     exam = db.query(Exam).filter(Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
+    _ensure_exam_writable(exam, "scheduled")
     if payload.scheduled_end <= payload.scheduled_start:
         raise HTTPException(status_code=422, detail="scheduled_end must be after scheduled_start")
 
@@ -453,7 +563,7 @@ def reschedule_exam(
     exam = db.query(Exam).filter(Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
-    if exam.status in ("ACTIVE", "COMPLETED", "ARCHIVED"):
+    if exam.status in ("ACTIVE", "COMPLETED", "CANCELLED", "TERMINATED", "ARCHIVED"):
         raise HTTPException(status_code=422, detail="Only DRAFT/SCHEDULED/AVAILABLE exams can be rescheduled")
     if payload.scheduled_end <= payload.scheduled_start:
         raise HTTPException(status_code=422, detail="scheduled_end must be after scheduled_start")
@@ -476,11 +586,47 @@ def cancel_exam(
     exam = db.query(Exam).filter(Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
-    if exam.status in ("ACTIVE", "COMPLETED"):
-        raise HTTPException(status_code=422, detail="Cannot cancel an ACTIVE/COMPLETED exam")
-    exam.status = "ARCHIVED"
+    if exam.status not in ("DRAFT", "SCHEDULED", "AVAILABLE"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Cannot cancel an {exam.status} exam (use terminate for a live exam)",
+        )
+    exam.status = "CANCELLED"
     exam.is_published = False
     audit(db, current_user, "EXAM_CANCEL", "exams", exam.id)
+    db.commit()
+    return _exam_to_out(db, exam)
+
+
+@router.post("/exams/{exam_id}/terminate", response_model=ExamOut)
+def terminate_exam(
+    exam_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_teacher),
+):
+    """Terminate a live (AVAILABLE/ACTIVE) exam.
+
+    Persists TERMINATED in SQL, marks every open session TERMINATED and keeps
+    all answers untouched (no grading, no auto-submit). The exam is never
+    re-openable; the audit trail and student-facing status reflect it."""
+    exam = db.query(Exam).filter(Exam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+    if current_user.role == "teacher":
+        teacher = db.query(Teacher).filter(Teacher.user_id == current_user.id).first()
+        if not teacher or exam.teacher_id != teacher.id:
+            raise HTTPException(status_code=403, detail="Only the owning teacher can terminate this exam")
+    reconcile_exam(db, exam)
+    if exam.status not in ("AVAILABLE", "ACTIVE"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Only AVAILABLE/ACTIVE exams can be terminated (current {exam.status})",
+        )
+
+    affected = terminate_exam_sessions(db, exam)
+    exam.status = "TERMINATED"
+    audit(db, current_user, "EXAM_TERMINATE", "exams", exam.id,
+          f"{affected} open session(s) terminated; answers preserved")
     db.commit()
     return _exam_to_out(db, exam)
 
@@ -494,11 +640,15 @@ def publish_exam(
     exam = db.query(Exam).filter(Exam.id == exam_id).first()
     if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
+    if exam.status in EXAM_TERMINAL_EDIT:
+        raise HTTPException(status_code=422, detail=f"{exam.status} exams cannot be published")
     q_count = db.query(Question).filter(Question.exam_id == exam.id).count()
     if q_count == 0:
         raise HTTPException(status_code=422, detail="Add at least one question before publishing")
     if not exam.scheduled_start or not exam.scheduled_end:
         raise HTTPException(status_code=422, detail="Schedule the exam before publishing")
+    if exam.pass_marks is not None and exam.total_marks and exam.pass_marks > exam.total_marks:
+        raise HTTPException(status_code=422, detail="Passing marks cannot exceed total marks")
 
     exam.is_published = True
     exam.is_saved_draft = False

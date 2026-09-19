@@ -45,6 +45,22 @@ class ProctoringMonitorSessionRow(BaseModel):
     audio_available: bool = False
     monitor_status: str = "IDLE"
     last_activity_at: Optional[datetime] = None
+    trust_score: float = 100.0
+    trust_level: str = "NORMAL"
+    trust_delta: float = 0.0
+
+
+class ProctoringMonitorTrustRow(BaseModel):
+    model_config = _P
+
+    id: int = 0
+    trust_score: float = 100.0
+    delta: float = 0.0
+    level: str = "NORMAL"
+    source: str = ""
+    reason: str = ""
+    event_types: Optional[List[str]] = None
+    recorded_at: Optional[datetime] = None
 
 
 class ProctoringMonitorRiskRow(BaseModel):
@@ -124,6 +140,9 @@ class ProctoringMonitorDetail(BaseModel):
     risk_index: float = 0.0
     risk_factors: Optional[Dict[str, Any]] = None
     risk_rows: List[ProctoringMonitorRiskRow] = []
+    trust_score: float = 100.0
+    trust_level: str = "NORMAL"
+    trust_rows: List[ProctoringMonitorTrustRow] = []
     incidents: List[ProctoringMonitorIncidentCard] = []
     evidence: List[ProctoringMonitorEvidenceCard] = []
     events: List[Dict[str, Any]] = []
@@ -173,5 +192,7 @@ class ProctoringStudentItemOut(BaseModel):
     status: str = ""
     risk_level: str = "NORMAL"
     risk_index: float = 0.0
+    trust_score: float = 100.0
+    trust_level: str = "NORMAL"
     monitor_status: str = "IDLE"
     last_activity_at: Optional[datetime] = None

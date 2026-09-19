@@ -82,7 +82,6 @@ export default function ExamPaper() {
   const deadlineRef = useRef(null)
   const paperRef = useRef(null)
   const endedRef = useRef(false)
-  const started = useRef(false)
 
   answersRef.current = answers
   deadlineRef.current = deadline
@@ -101,7 +100,7 @@ export default function ExamPaper() {
     if (endedRef.current) return
     try {
       const s = await api(`/student/sessions/${token}/summary`)
-      if (s.status === 'SUBMITTED' || s.status === 'EXPIRED') goResult(s)
+      if (s.status === 'SUBMITTED' || s.status === 'EXPIRED' || s.status === 'TERMINATED') goResult(s)
     } catch {
       goResult(null)
     }
@@ -149,10 +148,10 @@ export default function ExamPaper() {
 
   // --- flush dirty answers (autosave) ---
   const flushDirty = useCallback(() => {
-    if (endedRef.current || dirty.current.size === 0) return
+    if (endedRef.current || dirty.current.size === 0) return Promise.resolve()
     setSaveState('saving')
     const entries = [...dirty.current.entries()]
-    for (const [qid, payload] of entries) {
+    const inflight = entries.map(([qid, payload]) =>
       api(`/student/sessions/${token}/answers/${qid}`, { method: 'PUT', body: payload })
         .then(() => {
           dirty.current.delete(qid)
@@ -161,8 +160,9 @@ export default function ExamPaper() {
         .catch((e) => {
           if (e?.status === 409) handleClosed()
           else setSaveState('offline')
-        })
-    }
+        }),
+    )
+    return Promise.allSettled(inflight).then(() => {})
   }, [token, handleClosed])
 
   const selectOption = useCallback((qid, option) => {
@@ -202,8 +202,9 @@ export default function ExamPaper() {
 
   // --- periodic resync + heartbeat + autosave ---
   useEffect(() => {
-    if (!token || !started.current) return
+    if (!token) return
     const t = setInterval(() => {
+      if (endedRef.current || !paperRef.current) return
       flushDirty()
       api(`/student/sessions/${token}/paper`)
         .then((p) => {
@@ -217,7 +218,7 @@ export default function ExamPaper() {
           setTimeout(() => {
             api(`/student/sessions/${token}/summary`)
               .then((s) => {
-                if (s.status === 'SUBMITTED' || s.status === 'EXPIRED') goResult(s)
+                if (s.status === 'SUBMITTED' || s.status === 'EXPIRED' || s.status === 'TERMINATED') goResult(s)
               })
               .catch(() => {})
           }, 300)
@@ -226,11 +227,6 @@ export default function ExamPaper() {
     return () => clearInterval(t)
   }, [token, flushDirty, goResult, handleClosed])
 
-  useEffect(() => {
-    started.current = true
-  }, [])
-
-  // --- beforeunload warn ---
   useEffect(() => {
     const warn = (e) => {
       if (endedRef.current) return
@@ -245,7 +241,7 @@ export default function ExamPaper() {
   async function doAutoSubmit() {
     if (endedRef.current) return
     endedRef.current = true
-    flushDirty()
+    await flushDirty()
     try {
       const s = await api(`/student/sessions/${token}/submit`, { method: 'POST' })
       navigate(`/student/result/${token}`, { state: { status: s.status, auto: s.auto } })
@@ -258,7 +254,7 @@ export default function ExamPaper() {
     setConfirmOpen(false)
     if (endedRef.current) return
     endedRef.current = true
-    flushDirty()
+    await flushDirty()
     try {
       const s = await api(`/student/sessions/${token}/submit`, { method: 'POST' })
       navigate(`/student/result/${token}`, { state: { status: s.status, auto: s.auto } })
@@ -359,6 +355,10 @@ export default function ExamPaper() {
       </div>
 
       <div className="exam-footer">
+        <span className="exam-progress">
+          Answered {paper.questions.filter((pq) => answers[pq.id]?.selected).length} of {paper.question_count}
+          {' '}· {Object.values(answers).filter((a) => a?.marked).length} marked
+        </span>
         <button className="btn btn-outline-danger" onClick={() => setConfirmOpen(true)}>
           Submit exam
         </button>

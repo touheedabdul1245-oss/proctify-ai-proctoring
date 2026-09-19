@@ -1,6 +1,7 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../../api'
-import { PageHeader, Card, Badge, Loading, ErrorBox, useAsync } from '../../components/Ui'
+import { PageHeader, Card, Loading, useAsync } from '../../components/Ui'
 
 const LEVEL_CLASS = {
   NORMAL: 'risk-pill risk-normal',
@@ -11,34 +12,6 @@ const LEVEL_CLASS = {
 
 export default function Proctoring() {
   const bands = useAsync(() => api('/proctoring/bands'), [])
-  const [result, setResult] = useState(null)
-  const [running, setRunning] = useState(false)
-  const [error, setError] = useState(null)
-
-  async function runProbe() {
-    setRunning(true)
-    setError(null)
-    try {
-      const r = await api('/proctoring/ingest', {
-        method: 'POST',
-        body: {
-          session_token: 'demo-teacher-proctoring',
-          observation: {
-            objects: [{ class_name: 'phone', confidence: 0.92 }],
-            face: { available: true, face_count: 1, faces: [] },
-            head_pose: {},
-            audio: { available: true, speech_detected: false },
-            camera_available: true,
-          },
-        },
-      })
-      setResult(r)
-    } catch (e) {
-      setError(e)
-    } finally {
-      setRunning(false)
-    }
-  }
 
   if (bands.loading) return <Loading />
   const b = bands.data || {}
@@ -52,7 +25,7 @@ export default function Proctoring() {
 
       <Card title="Risk bands contract">
         <div className="stats-grid">
-          {[b.levels]?.flatMap?.call?.()
+          {Array.isArray(b.levels) && b.levels.length
             ? (b.levels || []).map((lv, i) => (
                 <div key={lv} className="stat-card">
                   <div className="stat-value">
@@ -72,44 +45,10 @@ export default function Proctoring() {
           <strong>{String(b.simulate_allowed)}</strong>
         </p>
 
-        <div className="segment-row">
-          <button className="btn btn-primary" onClick={runProbe} disabled={running}>
-            {running ? 'Running…' : 'Run live proctoring probe'}
-          </button>
-        </div>
-
-        {error && <ErrorBox error={error} />}
-        {result && (
-          <Card title="Latest signal">
-            <table className="table">
-              <tbody>
-                <tr>
-                  <td className="muted">Risk level</td>
-                  <td>
-                    <span className={LEVEL_CLASS[result.risk?.level] || ''}>
-                      {result.risk?.level}
-                    </span>
-                  </td>
-                </tr>
-                <tr>
-                  <td className="muted">Index</td>
-                  <td>{(result.risk?.index ?? 0).toFixed(3)}</td>
-                </tr>
-                <tr>
-                  <td className="muted">Factors</td>
-                  <td>{Object.entries(result.risk?.factors || {}).join(', ') || '—'}</td>
-                </tr>
-                <tr>
-                  <td className="muted">Incident candidates</td>
-                  <td>
-                    {(result.incident_candidates || []).length} pending review
-                    <Badge status="pending" />
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </Card>
-        )}
+        <p className="muted">
+          Live risk signals for running exams are shown on the{' '}
+          <Link to="/teacher/monitor">live monitor</Link>.
+        </p>
       </Card>
     </div>
   )

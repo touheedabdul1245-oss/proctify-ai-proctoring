@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { api, errorMessage } from '../../api'
 import { PageHeader, Card, Table, Badge, Modal, Field, ErrorBox, Loading, useAsync, fmtDate } from '../../components/Ui'
 
-const EMPTY = { email: '', password: '', full_name: '', role: 'student', student_id: '', teacher_id: '', class_code: '' }
+const EMPTY = { username: '', email: '', password: '', full_name: '', role: 'student', student_id: '', teacher_id: '', class_code: '' }
 
 export default function Users() {
   const [filters, setFilters] = useState({ role: '', q: '' })
@@ -34,6 +34,7 @@ export default function Users() {
 
   const cols = [
     { key: 'full_name', label: 'Name' },
+    { key: 'username', label: 'Username', render: (r) => <span className="mono">@{r.username || '—'}</span> },
     { key: 'email', label: 'Email' },
     { key: 'role', label: 'Role', render: (r) => <Badge status={r.role} /> },
     {
@@ -68,7 +69,7 @@ export default function Users() {
             </select>
           </Field>
           <Field label="Search">
-            <input value={filters.q} onChange={(e) => setFilters((f) => ({ ...f, q: e.target.value }))} placeholder="Name or email…" />
+            <input value={filters.q} onChange={(e) => setFilters((f) => ({ ...f, q: e.target.value }))} placeholder="Name or email or username…" />
           </Field>
         </div>
         {list.loading ? <Loading /> : <Table columns={cols} rows={list.data || []} />}
@@ -97,6 +98,11 @@ function FormBody({ form, set }) {
         <Field label="Full name" required>
           <input value={form.full_name} onChange={(e) => set('full_name', e.target.value)} required />
         </Field>
+        <Field label="Username" required>
+          <input value={form.username} onChange={(e) => set('username', e.target.value)} placeholder="Required, unique, lowercase letters/numbers/dots/dashes" required />
+        </Field>
+      </div>
+      <div className="form-grid">
         <Field label="Email" required>
           <input type="email" value={form.email} onChange={(e) => set('email', e.target.value)} required />
         </Field>

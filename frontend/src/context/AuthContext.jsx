@@ -26,12 +26,12 @@ export function AuthProvider({ children }) {
       })
   }, [])
 
-  async function login(email, password) {
+  async function login(username, password) {
     setError(null)
     try {
       const res = await api('/auth/login', {
         method: 'POST',
-        body: { email, password },
+        body: { username, password },
         token: null,
       })
       setToken(res.access_token)

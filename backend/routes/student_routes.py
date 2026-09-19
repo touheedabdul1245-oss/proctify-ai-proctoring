@@ -16,6 +16,7 @@ from ..models import (
     User,
 )
 from ..schemas import AssignedExamOut, ProfileOut
+from ..services.exam_state import reconcile_exam
 
 router = APIRouter(prefix="/api", tags=["student"])
 
@@ -74,6 +75,8 @@ def my_exams(
 
     ids = _assigned_exam_rows(db, student)
     exams = db.query(Exam).filter(Exam.id.in_(ids)).all()
+    for e in exams:
+        reconcile_exam(db, e)
     exams = [e for e in exams if e.is_published or include_unpublished]
     exams.sort(key=lambda e: e.scheduled_start or e.created_at)
     return [_assigned_exam_out(db, e, student) for e in exams]
@@ -93,6 +96,7 @@ def my_exam_detail(
         raise HTTPException(status_code=404, detail="Exam not found")
     if exam_id not in _assigned_exam_rows(db, student):
         raise HTTPException(status_code=403, detail="Exam not assigned to you")
+    reconcile_exam(db, exam)
     if not exam.is_published:
         raise HTTPException(status_code=403, detail="Exam has not been published yet")
     return _assigned_exam_out(db, exam, student)
@@ -143,12 +147,16 @@ def dashboard_stats(
         if teacher:
             exam_query = exam_query.filter(Exam.teacher_id == teacher.id)
         exams = exam_query.all()
+        for e in exams:
+            reconcile_exam(db, e)
         stats["counts"] = {
             "total_exams": len(exams),
             "draft": sum(1 for e in exams if e.status == "DRAFT"),
             "scheduled": sum(1 for e in exams if e.status in ("SCHEDULED", "AVAILABLE")),
             "active": sum(1 for e in exams if e.status == "ACTIVE"),
             "completed": sum(1 for e in exams if e.status == "COMPLETED"),
+            "cancelled": sum(1 for e in exams if e.status == "CANCELLED"),
+            "terminated": sum(1 for e in exams if e.status == "TERMINATED"),
             "archived": sum(1 for e in exams if e.status == "ARCHIVED"),
             "questions": db.query(Question).filter(Question.exam_id.in_([e.id for e in exams] or [0])).count(),
             "students": db.query(Student).count(),
@@ -157,11 +165,15 @@ def dashboard_stats(
         student = current_user.student_profile
         ids = list(_assigned_exam_rows(db, student))
         exams = db.query(Exam).filter(Exam.id.in_(ids)).all() if ids else []
+        for e in exams:
+            reconcile_exam(db, e)
         published = [e for e in exams if e.is_published]
         stats["counts"] = {
             "assigned_exams": len(exams),
             "published_exams": len(published),
             "upcoming": sum(1 for e in published if e.status in ("SCHEDULED", "AVAILABLE")),
             "available": sum(1 for e in published if e.status == "AVAILABLE"),
+            "completed": sum(1 for e in published if e.status == "COMPLETED"),
+            "terminated": sum(1 for e in published if e.status == "TERMINATED"),
         }
     return stats
